@@ -81,10 +81,12 @@ profile=personal-owner
 revision="$active"
 configured=true
 status=configured
-if [[ "$active" == "${TEST_HEALTH_UNCONFIGURED_SHA:-}" ]]; then
+case ":${TEST_HEALTH_UNCONFIGURED_SHA:-}:" in
+  *":$active:"*)
   configured=false
   status=not_configured
-fi
+    ;;
+esac
 if [[ "$active" == "${TEST_HEALTH_FAIL_SHA:-}" ]]; then
   case "${TEST_HEALTH_FAILURE_KIND:-revision}" in
     revision) revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
@@ -170,7 +172,7 @@ make_candidate() {
   digest="$(sha256sum "$path/release.tar.gz" | awk '{print $1}')"
   printf 'schema=1\nrepository=https://github.com/alexfisenkov/whatsapp-mcp.git\nref=refs/tags/deploy-ready\ncommit=%s\narchive_sha256=%s\n' "$sha" "$digest" >"$path/manifest.txt"
   chmod 0640 "$path/release.tar.gz" "$path/manifest.txt"
-  chmod 2750 "$path"
+  chmod 0750 "$path"
 }
 
 make_candidate "$GOOD_SHA"
@@ -206,7 +208,7 @@ if "$PROMOTE_SCRIPT" --retry "$BAD_PROFILE_SHA" >"$WORK/retry-failure.log" 2>&1;
 
 # Simulate interruption after switching while refs still point at the same new SHA.
 ln -sfn "$WORK/releases/releases/$BAD_PROFILE_SHA" "$WORK/releases/current"
-printf '%s\n%s\nactivating\n' "$GOOD_SHA" "$BAD_PROFILE_SHA" >"$WORK/promote-state/activation.pending"
+printf '%s\n%s\nactivating\nconfigured\nconfigured\n' "$GOOD_SHA" "$BAD_PROFILE_SHA" >"$WORK/promote-state/activation.pending"
 n_before_recovery="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
 "$PROMOTE_SCRIPT"
 [[ "$(current_sha)" == "$GOOD_SHA" ]] || fail 'interrupted activation did not restore prior release'
@@ -228,6 +230,62 @@ export TEST_HEALTH_FAIL_SHA=''
 [[ ! -e "$WORK/promote-state/rejected/$BAD_PROFILE_SHA" ]] || fail 'successful explicit retry kept stale quarantine'
 
 printf 'PASS: identity isolation templates, in-stage npm cache, candidate promotion, stage/promoter quarantine, revision/profile rollback, retry-failure persistence, interrupted activation recovery and same-SHA timer skip\n'
+
+# Existing unconfigured Business onboarding is a safe baseline for automatic updates.
+ONBOARD_UNCONFIGURED_SHA='6666666666666666666666666666666666666666'
+ONBOARD_STAY_UNCONFIGURED_SHA='6767676767676767676767676767676767676767'
+ONBOARD_INTERRUPTED_SHA='6777677767776777677767776777677767776777'
+ONBOARD_CONFIGURED_SHA='6868686868686868686868686868686868686868'
+ONBOARD_REGRESSION_SHA='6969696969696969696969696969696969696969'
+mkdir -p "$WORK/onboarding/releases" "$WORK/onboarding-state"
+make_candidate "$ONBOARD_UNCONFIGURED_SHA"
+export WHATSAPP_RELEASE_ROOT="$WORK/onboarding" WHATSAPP_PROMOTE_STATE_ROOT="$WORK/onboarding-state"
+export TEST_READY_SHA="$ONBOARD_UNCONFIGURED_SHA" TEST_MAIN_SHA="$ONBOARD_UNCONFIGURED_SHA"
+export TEST_HEALTH_UNCONFIGURED_SHA="$ONBOARD_UNCONFIGURED_SHA"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/onboarding")" == "$ONBOARD_UNCONFIGURED_SHA" ]] || fail 'initial unconfigured onboarding release did not bootstrap'
+
+make_candidate "$ONBOARD_STAY_UNCONFIGURED_SHA"
+export TEST_READY_SHA="$ONBOARD_STAY_UNCONFIGURED_SHA" TEST_MAIN_SHA="$ONBOARD_STAY_UNCONFIGURED_SHA"
+export TEST_HEALTH_UNCONFIGURED_SHA="$ONBOARD_UNCONFIGURED_SHA:$ONBOARD_STAY_UNCONFIGURED_SHA"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/onboarding")" == "$ONBOARD_STAY_UNCONFIGURED_SHA" ]] || fail 'stable not_configured health blocked an automatic update'
+
+# Recovery must restore an unconfigured prior baseline rather than require credentials.
+make_candidate "$ONBOARD_INTERRUPTED_SHA"
+mkdir -p "$WORK/onboarding/releases/$ONBOARD_INTERRUPTED_SHA/dist"
+printf '%s\n' "$ONBOARD_INTERRUPTED_SHA" >"$WORK/onboarding/releases/$ONBOARD_INTERRUPTED_SHA/.whatsapp-release-sha"
+printf 'fixture server\n' >"$WORK/onboarding/releases/$ONBOARD_INTERRUPTED_SHA/dist/http-server.js"
+ln -sfn "$WORK/onboarding/releases/$ONBOARD_INTERRUPTED_SHA" "$WORK/onboarding/current"
+printf '%s\n%s\nactivating\nnot_configured\nnot_configured\n' \
+  "$ONBOARD_STAY_UNCONFIGURED_SHA" "$ONBOARD_INTERRUPTED_SHA" >"$WORK/onboarding-state/activation.pending"
+export TEST_HEALTH_UNCONFIGURED_SHA="$ONBOARD_STAY_UNCONFIGURED_SHA"
+n_before_onboarding_recovery="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/onboarding")" == "$ONBOARD_STAY_UNCONFIGURED_SHA" ]] || fail 'recovery did not restore previous not_configured baseline'
+[[ ! -e "$WORK/onboarding-state/activation.pending" ]] || fail 'not_configured recovery journal was not cleared'
+[[ -f "$WORK/onboarding-state/rejected/$ONBOARD_INTERRUPTED_SHA" ]] || fail 'interrupted not_configured candidate was not quarantined'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_onboarding_recovery + 2))" ]] || fail 'not_configured recovery restarted more than both services once'
+
+make_candidate "$ONBOARD_CONFIGURED_SHA"
+export TEST_READY_SHA="$ONBOARD_CONFIGURED_SHA" TEST_MAIN_SHA="$ONBOARD_CONFIGURED_SHA"
+export TEST_HEALTH_UNCONFIGURED_SHA="$ONBOARD_STAY_UNCONFIGURED_SHA"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/onboarding")" == "$ONBOARD_CONFIGURED_SHA" ]] || fail 'not_configured to configured transition was rejected'
+
+make_candidate "$ONBOARD_REGRESSION_SHA"
+export TEST_READY_SHA="$ONBOARD_REGRESSION_SHA" TEST_MAIN_SHA="$ONBOARD_REGRESSION_SHA"
+export TEST_HEALTH_UNCONFIGURED_SHA="$ONBOARD_REGRESSION_SHA"
+n_before_config_regression="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/config-regression.log" 2>&1; then fail 'configured to not_configured health regression was accepted'; fi
+[[ "$(current_sha_at "$WORK/onboarding")" == "$ONBOARD_CONFIGURED_SHA" ]] || fail 'configuration regression did not roll back'
+[[ -f "$WORK/onboarding-state/rejected/$ONBOARD_REGRESSION_SHA" ]] || fail 'configuration regression was not quarantined'
+[[ ! -e "$WORK/onboarding-state/activation.pending" ]] || fail 'configuration regression journal was not cleared after rollback'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_config_regression + 4))" ]] || fail 'configuration regression did not restart candidate and rollback pairs'
+output="$("$PROMOTE_SCRIPT" 2>&1)" || fail "quarantined configuration regression tick failed: $output"
+[[ "$output" == *'explicit --retry'* ]] || fail 'quarantined configuration regression was not skipped'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_config_regression + 4))" ]] || fail 'quarantined configuration regression restarted services again'
+printf 'PASS: existing not_configured baseline, healthy config-onboarding transition, and configured-to-not_configured regression rollback/quarantine\n'
 
 # First install has no old release: bootstrap accepts an honest not_configured report.
 BOOTSTRAP_SHA='7777777777777777777777777777777777777777'

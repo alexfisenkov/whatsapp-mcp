@@ -128,6 +128,17 @@ application state, or polkit. Npm's cache is pinned to a private subdirectory of
 the stage scratch so `ProtectHome=yes` does not redirect it to an inaccessible
 home path. The stage UID never executes as root.
 
+Provision the candidate exchange root as `stage-user:candidate-group` mode
+`0770` and the release root as `promoter-user:release-group` mode `0750`, with
+no setgid bit. Each staged candidate directory is group-owned by the candidate
+group and mode `0750`; promoted release directories are group-owned by the
+release group and mode `0750`, with files group-readable and not group-writable.
+The unit sandboxes keep the promoter read-only on candidates and apps read-only
+on releases. Avoid setgid bits: both updater units use
+`RestrictSUIDSGID=yes`, and newly created directories otherwise inherit setgid
+from a parent, which prevents the helper from applying the final read-only
+directory mode.
+
 On successful staging, systemd starts a separate fixed, root-owned promoter
 helper under a dedicated promoter UID. That UID cannot access staging scratch,
 app state, or credentials; it reads the candidate exchange and writes only
@@ -151,16 +162,20 @@ also accepts either truthful state pair: `configured: true` with
 `status: configured`, or `configured: false` with `status: not_configured`.
 This lets the owner bring up an empty WAHA session and a Business profile before
 issuing Meta credentials; it does not claim that either account is connected.
-All later releases require the configured state pair for both profiles. A
-mismatch restores the prior release and restarts both services. When there is no
-prior release, a failed bootstrap stops both services, removes the active link
-and failed release, and leaves its tested SHA quarantined. The rejected SHA is
-skipped on later timer runs; an operator must request `--retry
-<same-40-hex-SHA>` explicitly or wait for a new tested SHA. A journal outside
-releases recovers interrupted activation. Session, media, SQLite history, audit
-state, and credentials remain outside the release tree. Recovery quarantines
-the interrupted candidate and stops that promoter run; the next timer tick
-cannot immediately reactivate the same SHA. Keep schema changes
+Before each later promotion, the updater checks the active release's identity
+and health state for both profiles. A profile that is currently configured must
+remain configured; a truthful `not_configured` profile may remain so or become
+configured after onboarding. A configured-to-not-configured transition is a
+health regression and rolls the candidate back. The activation journal stores
+both prior profile states so rollback and interruption recovery use the same
+baseline. When there is no prior release, a failed bootstrap stops both
+services, removes the active link and failed release, and leaves its tested SHA
+quarantined. The rejected SHA is skipped on later timer runs; an operator must
+request `--retry <same-40-hex-SHA>` explicitly or wait for a new tested SHA. A
+journal outside releases recovers interrupted activation. Session, media,
+SQLite history, audit state, and credentials remain outside the release tree.
+Recovery quarantines the interrupted candidate and stops that promoter run; the
+next timer tick cannot immediately reactivate the same SHA. Keep schema changes
 backward-compatible across current and previous application releases; code
 rollback does not rewind databases.
 
@@ -171,9 +186,12 @@ directories. WAHA has a separate identity and is not a member of the app release
 group.
 
 The timer is enabled only after an independently verified bootstrap release,
-both profiles report configured health, distinct service identities, path
-permissions, the exact polkit rule, and rollback smoke tests are installed and
-checked. The WAHA image remains pinned independently; this GitHub application
+both profiles report their baseline health states with exact identities and
+release SHA, distinct service identities, path permissions, the exact polkit
+rule, and rollback smoke tests are installed and checked. Business may remain
+truthfully `not_configured` while Meta onboarding is pending; this does not
+block tested application-code updates and does not mean the Business account is
+connected. The WAHA image remains pinned independently; this GitHub application
 updater promotes only the tested Node application source and lockfile
 dependencies. It does not upgrade the host Node runtime, OS packages, WAHA image,
 Quadlet/systemd/nginx templates, or the private cloud OAuth gateway and profile

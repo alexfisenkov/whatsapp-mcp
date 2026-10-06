@@ -91,8 +91,8 @@ stop_adapters() {
   systemctl stop "$PERSONAL_UNIT" && systemctl stop "$BUSINESS_UNIT"
 }
 
-health_once() {
-  local url="$1" adapter="$2" profile="$3" revision="$4" allow_unconfigured="${5:-false}" body
+health_state() {
+  local url="$1" adapter="$2" profile="$3" revision="$4" body
   body="$(curl --disable --noproxy '*' --silent --show-error --fail --max-time 3 "$url")" || return 1
   printf '%s' "$body" | python3 -c '
 import json, sys
@@ -104,19 +104,29 @@ expected = {"adapter": sys.argv[1], "profileId": sys.argv[2], "releaseRevision":
 if any(data.get(key) != value for key, value in expected.items()):
     raise SystemExit(1)
 if data.get("configured") is True and data.get("status") == "configured":
-    raise SystemExit(0)
-if sys.argv[4] == "allow-unconfigured" and data.get("configured") is False and data.get("status") == "not_configured":
-    raise SystemExit(0)
-raise SystemExit(1)
-' "$adapter" "$profile" "$revision" "$allow_unconfigured"
+    print("configured")
+elif data.get("configured") is False and data.get("status") == "not_configured":
+    print("not_configured")
+else:
+    raise SystemExit(1)
+' "$adapter" "$profile" "$revision"
+}
+
+health_once() {
+  local url="$1" adapter="$2" profile="$3" revision="$4" baseline="$5" actual
+  actual="$(health_state "$url" "$adapter" "$profile" "$revision")" || return 1
+  case "$baseline:$actual" in
+    none:configured|none:not_configured|configured:configured|not_configured:configured|not_configured:not_configured) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 wait_health() {
-  local revision="$1" allow_unconfigured="${2:-false}" attempt
+  local revision="$1" personal_baseline="$2" business_baseline="$3" attempt
   for attempt in {1..20}; do
     if health_once "$HEALTH_PERSONAL" "$PERSONAL_ADAPTER" "$PERSONAL_PROFILE" "$revision" \
-      "$allow_unconfigured" \
-      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision" "$allow_unconfigured"; then
+      "$personal_baseline" \
+      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision" "$business_baseline"; then
       return 0
     fi
     sleep 2
@@ -136,8 +146,8 @@ mark_rejected() {
 }
 
 write_pending() {
-  local old_sha="$1" new_sha="$2" phase="$3" temporary="$PROMOTE_STATE_ROOT/.activation.$$.tmp"
-  printf '%s\n%s\n%s\n' "$old_sha" "$new_sha" "$phase" >"$temporary"
+  local old_sha="$1" new_sha="$2" phase="$3" personal_baseline="$4" business_baseline="$5" temporary="$PROMOTE_STATE_ROOT/.activation.$$.tmp"
+  printf '%s\n%s\n%s\n%s\n%s\n' "$old_sha" "$new_sha" "$phase" "$personal_baseline" "$business_baseline" >"$temporary"
   chmod 0600 "$temporary"
   python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$temporary" "$PENDING_FILE"
 }
@@ -290,12 +300,19 @@ fi
 recover_pending() {
   [[ -f "$PENDING_FILE" && ! -L "$PENDING_FILE" ]] || return 0
   local -a pending=()
-  local line old_sha new_sha
+  local line old_sha new_sha personal_baseline business_baseline
   while IFS= read -r line; do pending+=("$line"); done <"$PENDING_FILE"
-  [[ "${#pending[@]}" -eq 3 ]] || die 'invalid activation journal; manual recovery required'
+  [[ "${#pending[@]}" -eq 5 ]] || die 'invalid activation journal; manual recovery required'
   old_sha="${pending[0]}"
   new_sha="${pending[1]}"
+  personal_baseline="${pending[3]}"
+  business_baseline="${pending[4]}"
   { [[ "$old_sha" == 'none' ]] || valid_sha "$old_sha"; } && valid_sha "$new_sha" || die 'invalid activation journal SHA; manual recovery required'
+  case "$old_sha:$personal_baseline:$business_baseline" in
+    none:none:none) ;;
+    [0-9a-f][0-9a-f]*:configured:configured|[0-9a-f][0-9a-f]*:configured:not_configured|[0-9a-f][0-9a-f]*:not_configured:configured|[0-9a-f][0-9a-f]*:not_configured:not_configured) valid_sha "$old_sha" || die 'invalid activation journal baseline; manual recovery required' ;;
+    *) die 'invalid activation journal health baseline; manual recovery required' ;;
+  esac
   [[ "$old_sha" != "$new_sha" ]] || die 'activation journal must name distinct releases'
   [[ -d "$RELEASES/$new_sha" ]] || die 'activation journal candidate release missing; manual recovery required'
   log "recover interrupted activation; quarantine $new_sha and restore ${old_sha}"
@@ -320,7 +337,7 @@ recover_pending() {
   log "restore previous release $old_sha"
   switch_current "$old_sha" || die 'cannot restore release symlink during recovery'
   restart_adapters || die 'service restart failed during recovery'
-  wait_health "$old_sha" || die 'previous release health failed during recovery'
+  wait_health "$old_sha" "$personal_baseline" "$business_baseline" || die 'previous release health failed during recovery'
   rm -f -- "$PENDING_FILE"
   log "recovered activation to $old_sha; stop this run before another promotion"
   exit 0
@@ -351,11 +368,17 @@ fi
 
 bootstrap=0
 old_sha='none'
+personal_baseline=none
+business_baseline=none
 if [[ -L "$CURRENT_LINK" ]]; then
   old_release="$(current_target)" || die 'current symlink target is outside the release root'
   old_sha="$(basename "$old_release")"
   valid_sha "$old_sha" || die 'current release directory is not named by a SHA'
   [[ "$(cat "$old_release/.whatsapp-release-sha")" == "$old_sha" ]] || die 'current release marker mismatch'
+  personal_baseline="$(health_state "$HEALTH_PERSONAL" "$PERSONAL_ADAPTER" "$PERSONAL_PROFILE" "$old_sha")" \
+    || die 'current personal profile health does not match its release identity'
+  business_baseline="$(health_state "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$old_sha")" \
+    || die 'current Business profile health does not match its release identity'
   if [[ "$ready_sha" == "$old_sha" ]]; then
     log "release $ready_sha is already active"
     exit 0
@@ -376,11 +399,9 @@ ready_after="$(remote_sha "$READY_REF")" || die 'cannot re-read deploy-ready ref
 main_after="$(remote_sha "$MAIN_REF")" || die 'cannot re-read main ref'
 [[ "$ready_after" == "$ready_sha" && "$main_after" == "$ready_sha" ]] || { log 'tested ref changed before promotion; skip'; exit 0; }
 
-write_pending "$old_sha" "$ready_sha" activating
+write_pending "$old_sha" "$ready_sha" activating "$personal_baseline" "$business_baseline"
 switch_current "$ready_sha" || die 'cannot atomically switch active release'
-allow_unconfigured=false
-if [[ "$bootstrap" -eq 1 ]]; then allow_unconfigured=allow-unconfigured; fi
-if restart_adapters && wait_health "$ready_sha" "$allow_unconfigured"; then
+if restart_adapters && wait_health "$ready_sha" "$personal_baseline" "$business_baseline"; then
   rm -f -- "$REJECTED_DIR/$ready_sha"
   rm -f -- "$PENDING_FILE"
   if [[ "$bootstrap" -eq 1 ]]; then
@@ -407,7 +428,7 @@ fi
 log "release $ready_sha failed identity/configured health checks; rolling back to $old_sha"
 switch_current "$old_sha" || die 'rollback symlink failed; activation journal retained'
 restart_adapters || die 'rollback restart failed; activation journal retained'
-wait_health "$old_sha" || die 'rollback health failed; activation journal retained'
+wait_health "$old_sha" "$personal_baseline" "$business_baseline" || die 'rollback health failed; activation journal retained'
 mark_rejected "$ready_sha" || die 'could not persist rejected-SHA quarantine'
 rm -f -- "$PENDING_FILE"
 die "candidate $ready_sha failed; previous release restored and SHA quarantined"
