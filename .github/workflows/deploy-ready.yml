@@ -1,0 +1,48 @@
+name: Promote tested deployment ref
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-ready
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out trusted repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Promote only the tested current main commit
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY" == "${GITHUB_REPOSITORY}" ]]
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse FETCH_HEAD)"
+          if [[ "$current_main" != "$TESTED_SHA" ]]; then
+            echo "The tested commit is no longer the current main; a newer CI run may promote it."
+            exit 0
+          fi
+          git cat-file -e "${TESTED_SHA}^{commit}"
+          git push --force origin "${TESTED_SHA}:refs/tags/deploy-ready"

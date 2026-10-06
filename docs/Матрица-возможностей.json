@@ -1,0 +1,516 @@
+{
+  "generator": "scripts/generate-capabilities.mjs",
+  "note": "Generated from adapter operation definitions. Conditional tools appear only when their documented runtime flag is enabled. No WhatsApp/Meta API request is made.",
+  "profiles": {
+    "personal": {
+      "default": [
+        {
+          "id": "personal.system.health",
+          "title": "Check WAHA health",
+          "kind": "read",
+          "description": "Read the private WAHA service health state."
+        },
+        {
+          "id": "personal.system.version",
+          "title": "Get WAHA version",
+          "kind": "read",
+          "description": "Read the configured WAHA version."
+        },
+        {
+          "id": "personal.session.status",
+          "title": "Get linked-device session status",
+          "kind": "read",
+          "description": "Read the state of this account-linked WAHA session."
+        },
+        {
+          "id": "personal.account.me",
+          "title": "Get linked WhatsApp account",
+          "kind": "read",
+          "description": "Read the session account identity and display name."
+        },
+        {
+          "id": "personal.chats.list",
+          "title": "List chats",
+          "kind": "read",
+          "description": "List chats from the bounded NOWEB store with pagination."
+        },
+        {
+          "id": "personal.chats.overview",
+          "title": "Get chat overview",
+          "kind": "read",
+          "description": "Read chat names and recent-message summaries from the bounded store."
+        },
+        {
+          "id": "personal.messages.list",
+          "title": "List messages",
+          "kind": "read",
+          "description": "Read a bounded page from one chat or, on NOWEB, all stored chats."
+        },
+        {
+          "id": "personal.messages.get",
+          "title": "Get a message",
+          "kind": "read",
+          "description": "Read one message and safe media metadata by chat and message ID."
+        },
+        {
+          "id": "personal.messages.edit",
+          "title": "Edit a sent message",
+          "kind": "guarded-mutation",
+          "description": "Edit one of this account’s own messages after verifying sender and target."
+        },
+        {
+          "id": "personal.contacts.list",
+          "title": "List contacts",
+          "kind": "read",
+          "description": "List contacts stored by NOWEB with pagination."
+        },
+        {
+          "id": "personal.contacts.get",
+          "title": "Get a contact",
+          "kind": "read",
+          "description": "Read one saved contact by WhatsApp contact ID."
+        },
+        {
+          "id": "personal.groups.list",
+          "title": "List groups",
+          "kind": "read",
+          "description": "List the account groups available through NOWEB."
+        },
+        {
+          "id": "personal.groups.get",
+          "title": "Get group",
+          "kind": "read",
+          "description": "Read one group and its safe metadata."
+        },
+        {
+          "id": "personal.groups.participants",
+          "title": "List group participants",
+          "kind": "read",
+          "description": "Read one page of participants in a group."
+        },
+        {
+          "id": "personal.channels.list",
+          "title": "List followed channels",
+          "kind": "read",
+          "description": "Read channels visible to this linked-device account."
+        },
+        {
+          "id": "personal.messages.send_text",
+          "title": "Send a text message",
+          "kind": "guarded-mutation",
+          "description": "Send one text message to a chat or to a channel where this account is OWNER/ADMIN."
+        },
+        {
+          "id": "personal.messages.send_image",
+          "title": "Send an image",
+          "kind": "guarded-mutation",
+          "description": "Send an image already stored in the private managed media store."
+        },
+        {
+          "id": "personal.messages.send_file",
+          "title": "Send a document",
+          "kind": "guarded-mutation",
+          "description": "Send a document already stored in the private managed media store."
+        },
+        {
+          "id": "personal.messages.send_voice",
+          "title": "Send a voice message",
+          "kind": "guarded-mutation",
+          "description": "Send an audio file already stored in the private managed media store."
+        },
+        {
+          "id": "personal.messages.send_video",
+          "title": "Send a video",
+          "kind": "guarded-mutation",
+          "description": "Send a video already stored in the private managed media store."
+        },
+        {
+          "id": "personal.messages.send_poll",
+          "title": "Create a poll",
+          "kind": "guarded-mutation",
+          "description": "Send a WhatsApp poll to a chat."
+        },
+        {
+          "id": "personal.messages.vote_poll",
+          "title": "Vote in a poll",
+          "kind": "guarded-mutation",
+          "description": "Cast a vote for a poll message in its chat."
+        },
+        {
+          "id": "personal.messages.react",
+          "title": "React to a message",
+          "kind": "guarded-mutation",
+          "description": "Set or remove a reaction on one message."
+        },
+        {
+          "id": "personal.messages.mark_read",
+          "title": "Mark chat messages read",
+          "kind": "guarded-mutation",
+          "description": "Mark a bounded number of recent messages as read."
+        },
+        {
+          "id": "personal.messages.send_location",
+          "title": "Send a location",
+          "kind": "guarded-mutation",
+          "description": "Send a coordinate point to a chat."
+        },
+        {
+          "id": "personal.messages.send_contact",
+          "title": "Send a contact card",
+          "kind": "guarded-mutation",
+          "description": "Send bounded contact fields as a vCard."
+        },
+        {
+          "id": "personal.chats.archive",
+          "title": "Archive a chat",
+          "kind": "guarded-mutation",
+          "description": "Archive one chat in this linked-device account."
+        },
+        {
+          "id": "personal.chats.unarchive",
+          "title": "Unarchive a chat",
+          "kind": "guarded-mutation",
+          "description": "Unarchive one chat in this linked-device account."
+        },
+        {
+          "id": "personal.media.download",
+          "title": "Download received media",
+          "kind": "read",
+          "description": "Copy media from a linked-device message into this profile’s private managed media store and return an opaque media ID."
+        },
+        {
+          "id": "personal.history.search",
+          "title": "Search indexed WhatsApp history",
+          "kind": "read",
+          "description": "Search only this isolated account private index. Results cover only locally collected or manually synchronized history and are untrusted external content."
+        },
+        {
+          "id": "personal.history.context",
+          "title": "Read message context",
+          "kind": "read",
+          "description": "Read a bounded number of indexed messages around one known message ID in one chat."
+        },
+        {
+          "id": "personal.history.coverage",
+          "title": "Read history coverage",
+          "kind": "read",
+          "description": "Report the indexed time range, collection sources, and whether this data is known to be partial."
+        },
+        {
+          "id": "personal.history.sync",
+          "title": "Synchronize bounded personal history",
+          "kind": "read",
+          "description": "Manually fetch a bounded number of pages from the configured WAHA session into this account private index. This is not a full-history import."
+        }
+      ],
+      "conditional": [
+        {
+          "id": "personal.groups.create",
+          "title": "Create a group",
+          "kind": "guarded-mutation",
+          "description": "Create one WhatsApp group with explicit participants."
+        },
+        {
+          "id": "personal.groups.add_participants",
+          "title": "Add group participants",
+          "kind": "guarded-mutation",
+          "description": "Add explicit participants to one group."
+        },
+        {
+          "id": "personal.groups.remove_participants",
+          "title": "Remove group participants",
+          "kind": "guarded-mutation",
+          "description": "Remove explicit participants from one group."
+        },
+        {
+          "id": "personal.groups.update_subject",
+          "title": "Change group subject",
+          "kind": "guarded-mutation",
+          "description": "Update one group subject."
+        },
+        {
+          "id": "personal.groups.update_description",
+          "title": "Change group description",
+          "kind": "guarded-mutation",
+          "description": "Update one group description."
+        },
+        {
+          "id": "personal.groups.leave",
+          "title": "Leave a group",
+          "kind": "guarded-mutation",
+          "description": "Leave one group from this linked-device account."
+        },
+        {
+          "id": "personal.status.send_text",
+          "title": "Publish a text status",
+          "kind": "guarded-mutation",
+          "description": "Publish a text status to the configured WhatsApp audience or a bounded contact set."
+        },
+        {
+          "id": "personal.status.send_image",
+          "title": "Publish an image status",
+          "kind": "guarded-mutation",
+          "description": "Publish a managed image as a WhatsApp status."
+        }
+      ]
+    },
+    "business": {
+      "default": [
+        {
+          "id": "business.account.get",
+          "title": "Get WhatsApp Business Account",
+          "kind": "read",
+          "description": "Read the configured WABA name and supported account metadata."
+        },
+        {
+          "id": "business.phone.get",
+          "title": "Get business phone number",
+          "kind": "read",
+          "description": "Read metadata for the configured WhatsApp Business phone number."
+        },
+        {
+          "id": "business.phone_numbers.list",
+          "title": "List business phone numbers",
+          "kind": "read",
+          "description": "List a bounded page of phone numbers linked to this WABA."
+        },
+        {
+          "id": "business.messages.send_text",
+          "title": "Send a text message",
+          "kind": "guarded-mutation",
+          "description": "Send one policy-compliant text message to a WhatsApp recipient."
+        },
+        {
+          "id": "business.messages.send_template",
+          "title": "Send a template message",
+          "kind": "guarded-mutation",
+          "description": "Send an approved WhatsApp template with typed parameters."
+        },
+        {
+          "id": "business.messages.send_image",
+          "title": "Send an image",
+          "kind": "guarded-mutation",
+          "description": "Send a previously uploaded Meta media ID as an image."
+        },
+        {
+          "id": "business.messages.send_document",
+          "title": "Send a document",
+          "kind": "guarded-mutation",
+          "description": "Send a previously uploaded Meta media ID as a document."
+        },
+        {
+          "id": "business.messages.send_audio",
+          "title": "Send audio",
+          "kind": "guarded-mutation",
+          "description": "Send a previously uploaded Meta media ID as audio."
+        },
+        {
+          "id": "business.messages.send_video",
+          "title": "Send a video",
+          "kind": "guarded-mutation",
+          "description": "Send a previously uploaded Meta media ID as a video."
+        },
+        {
+          "id": "business.messages.send_reaction",
+          "title": "Send a reaction",
+          "kind": "guarded-mutation",
+          "description": "React to one inbound or outbound message by Meta message ID."
+        },
+        {
+          "id": "business.messages.send_location",
+          "title": "Send a location",
+          "kind": "guarded-mutation",
+          "description": "Send a geographic point to a WhatsApp recipient."
+        },
+        {
+          "id": "business.messages.send_contact",
+          "title": "Send a contact card",
+          "kind": "guarded-mutation",
+          "description": "Send one validated contact card to a WhatsApp recipient."
+        },
+        {
+          "id": "business.messages.send_interactive_buttons",
+          "title": "Send interactive buttons",
+          "kind": "guarded-mutation",
+          "description": "Send up to three reply buttons in an interactive message."
+        },
+        {
+          "id": "business.messages.send_interactive_list",
+          "title": "Send an interactive list",
+          "kind": "guarded-mutation",
+          "description": "Send a bounded list menu in an interactive message."
+        },
+        {
+          "id": "business.messages.send_flow",
+          "title": "Send a WhatsApp Flow",
+          "kind": "guarded-mutation",
+          "description": "Send a published or draft WhatsApp Flow entry message."
+        },
+        {
+          "id": "business.messages.mark_read",
+          "title": "Mark an incoming message read",
+          "kind": "guarded-mutation",
+          "description": "Mark one message ID as read through the Cloud API."
+        },
+        {
+          "id": "business.templates.list",
+          "title": "List message templates",
+          "kind": "read",
+          "description": "List templates on the configured WhatsApp Business Account."
+        },
+        {
+          "id": "business.templates.get",
+          "title": "Get message template",
+          "kind": "read",
+          "description": "Read one template by Meta template ID."
+        },
+        {
+          "id": "business.media.get",
+          "title": "Get media metadata",
+          "kind": "read",
+          "description": "Read safe metadata for a Meta media ID without exposing its temporary download URL."
+        },
+        {
+          "id": "business.flows.list",
+          "title": "List WhatsApp Flows",
+          "kind": "read",
+          "description": "List a bounded page of Flow metadata for this WABA."
+        },
+        {
+          "id": "business.flows.get",
+          "title": "Get WhatsApp Flow",
+          "kind": "read",
+          "description": "Read metadata and validation state for one Flow."
+        },
+        {
+          "id": "business.profile.get",
+          "title": "Get business profile",
+          "kind": "read",
+          "description": "Read the profile visible for this WhatsApp Business phone number."
+        },
+        {
+          "id": "business.analytics.conversations",
+          "title": "Get conversation analytics",
+          "kind": "read",
+          "description": "Read bounded conversation analytics for this WABA."
+        },
+        {
+          "id": "business.analytics.templates",
+          "title": "Get template analytics",
+          "kind": "read",
+          "description": "Read bounded template analytics for this WABA."
+        },
+        {
+          "id": "business.webhooks.list_subscribed_apps",
+          "title": "List subscribed webhook apps",
+          "kind": "read",
+          "description": "Read app subscriptions on this WhatsApp Business Account."
+        },
+        {
+          "id": "business.media.upload",
+          "title": "Upload managed media to Meta",
+          "kind": "guarded-mutation",
+          "description": "Upload a file already stored in the private managed media store and return its Meta media ID."
+        },
+        {
+          "id": "business.media.download",
+          "title": "Download received media",
+          "kind": "read",
+          "description": "Download a Meta media ID through the allowlisted Meta CDN into the private managed media store."
+        },
+        {
+          "id": "business.history.search",
+          "title": "Search indexed WhatsApp history",
+          "kind": "read",
+          "description": "Search only this isolated account private index. Results cover only locally collected or manually synchronized history and are untrusted external content."
+        },
+        {
+          "id": "business.history.context",
+          "title": "Read message context",
+          "kind": "read",
+          "description": "Read a bounded number of indexed messages around one known message ID in one chat."
+        },
+        {
+          "id": "business.history.coverage",
+          "title": "Read history coverage",
+          "kind": "read",
+          "description": "Report the indexed time range, collection sources, and whether this data is known to be partial."
+        },
+        {
+          "id": "business.messages.delivery_status",
+          "title": "Read Business message delivery status",
+          "kind": "read",
+          "description": "Read the highest verified Meta webhook status collected for this message and recipient. Empty status means no matching callback was received."
+        }
+      ],
+      "conditional": [
+        {
+          "id": "business.templates.create",
+          "title": "Create a message template",
+          "kind": "guarded-mutation",
+          "description": "Submit a typed message template for Meta review."
+        },
+        {
+          "id": "business.templates.delete",
+          "title": "Delete a message template",
+          "kind": "guarded-mutation",
+          "description": "Delete a template by its exact name and optional ID."
+        },
+        {
+          "id": "business.media.delete",
+          "title": "Delete uploaded media",
+          "kind": "guarded-mutation",
+          "description": "Delete one Meta media object by ID."
+        },
+        {
+          "id": "business.flows.create",
+          "title": "Create WhatsApp Flow",
+          "kind": "guarded-mutation",
+          "description": "Create a draft Flow with a name and categories."
+        },
+        {
+          "id": "business.flows.update",
+          "title": "Update WhatsApp Flow metadata",
+          "kind": "guarded-mutation",
+          "description": "Update a draft Flow name or categories."
+        },
+        {
+          "id": "business.flows.publish",
+          "title": "Publish WhatsApp Flow",
+          "kind": "guarded-mutation",
+          "description": "Publish one validated Flow."
+        },
+        {
+          "id": "business.flows.deprecate",
+          "title": "Deprecate WhatsApp Flow",
+          "kind": "guarded-mutation",
+          "description": "Deprecate one published Flow."
+        },
+        {
+          "id": "business.flows.delete",
+          "title": "Delete WhatsApp Flow",
+          "kind": "guarded-mutation",
+          "description": "Delete one Flow by its Meta ID."
+        },
+        {
+          "id": "business.profile.update",
+          "title": "Update business profile",
+          "kind": "guarded-mutation",
+          "description": "Update explicitly supplied WhatsApp Business profile fields."
+        },
+        {
+          "id": "business.webhooks.subscribe_app",
+          "title": "Subscribe this app to WABA webhooks",
+          "kind": "guarded-mutation",
+          "description": "Subscribe the configured app to WABA webhook events."
+        },
+        {
+          "id": "business.webhooks.unsubscribe_app",
+          "title": "Unsubscribe this app from WABA webhooks",
+          "kind": "guarded-mutation",
+          "description": "Remove the configured app subscription from this WABA."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,97 @@
+# Include only in the already-verified MCP TLS vhost.
+# This exact route intentionally bypasses MCP Bearer auth; the application
+# must validate Meta's challenge and raw-body HMAC before accepting any event.
+location = @META_WEBHOOK_PUBLIC_PATH@ {
+    limit_except GET POST { deny all; }
+    client_max_body_size @MAX_WEBHOOK_BYTES@;
+    access_log off;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 30s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_pass http://127.0.0.1:@BUSINESS_MCP_LOOPBACK_PORT@/webhooks/meta;
+}
+
+# Owner-only media ingress uses the same internal Bearer gate as /mcp. Keep
+# these two exact paths; do not replace them with a prefix or wildcard route.
+location = /whatsapp-personal/media {
+    if ($args != "") { return 400; }
+    limit_except POST { deny all; }
+    client_max_body_size 5m;
+    access_log off;
+    set $mcp_name whatsapp-personal;
+    auth_request /_auth;
+    auth_request_set $backend_auth $upstream_http_x_backend_auth;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    proxy_set_header Authorization $backend_auth;
+    proxy_set_header Content-Type $content_type;
+    proxy_set_header X-File-Name $http_x_file_name;
+    proxy_set_header Host $host;
+    proxy_pass http://127.0.0.1:@PERSONAL_MCP_LOOPBACK_PORT@/media;
+}
+
+location = /whatsapp-business/media {
+    if ($args != "") { return 400; }
+    limit_except POST { deny all; }
+    client_max_body_size 5m;
+    access_log off;
+    set $mcp_name whatsapp-business;
+    auth_request /_auth;
+    auth_request_set $backend_auth $upstream_http_x_backend_auth;
+
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    proxy_set_header Authorization $backend_auth;
+    proxy_set_header Content-Type $content_type;
+    proxy_set_header X-File-Name $http_x_file_name;
+    proxy_set_header Host $host;
+    proxy_pass http://127.0.0.1:@BUSINESS_MCP_LOOPBACK_PORT@/media;
+}
+
+# Opaque media downloads are profile-authenticated and UUID-addressed. Preserve
+# the validated suffix while proxying; no caller-selected path or query passes.
+location ~ "^/whatsapp-personal/media/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" {
+    if ($args != "") { return 400; }
+    limit_except GET { deny all; }
+    access_log off;
+    set $mcp_name whatsapp-personal;
+    auth_request /_auth;
+    auth_request_set $backend_auth $upstream_http_x_backend_auth;
+
+    proxy_http_version 1.1;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 30s;
+    proxy_set_header Authorization $backend_auth;
+    proxy_set_header Host $host;
+    rewrite ^/whatsapp-personal(/media/[0-9a-f-]+)$ $1 break;
+    proxy_pass http://127.0.0.1:@PERSONAL_MCP_LOOPBACK_PORT@;
+}
+
+location ~ "^/whatsapp-business/media/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" {
+    if ($args != "") { return 400; }
+    limit_except GET { deny all; }
+    access_log off;
+    set $mcp_name whatsapp-business;
+    auth_request /_auth;
+    auth_request_set $backend_auth $upstream_http_x_backend_auth;
+
+    proxy_http_version 1.1;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 30s;
+    proxy_set_header Authorization $backend_auth;
+    proxy_set_header Host $host;
+    rewrite ^/whatsapp-business(/media/[0-9a-f-]+)$ $1 break;
+    proxy_pass http://127.0.0.1:@BUSINESS_MCP_LOOPBACK_PORT@;
+}

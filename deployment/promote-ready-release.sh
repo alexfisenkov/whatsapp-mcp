@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# Promote a staged archive without executing its code. Installed as a fixed,
+# root-owned helper and run only by the unprivileged promoter identity.
+set -Eeuo pipefail
+umask 077
+
+readonly REPOSITORY='https://github.com/alexfisenkov/whatsapp-mcp.git'
+readonly READY_REF='refs/tags/deploy-ready'
+readonly MAIN_REF='refs/heads/main'
+readonly PERSONAL_UNIT='mcp-whatsapp-personal.service'
+readonly BUSINESS_UNIT='mcp-whatsapp-business.service'
+readonly PERSONAL_ADAPTER='linked-device'
+readonly BUSINESS_ADAPTER='business-graph'
+readonly PERSONAL_PROFILE='personal-owner'
+readonly BUSINESS_PROFILE='business-owner'
+
+log() { printf 'whatsapp-promote: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+valid_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+[[ "$(id -u)" -ne 0 ]] || die 'must run as the unprivileged promoter identity'
+[[ "$(id -un)" == "${WHATSAPP_PROMOTE_USER:?}" ]] || die 'unexpected promoter identity'
+
+readonly CANDIDATE_ROOT="${WHATSAPP_CANDIDATE_ROOT:?}"
+readonly RELEASE_ROOT="${WHATSAPP_RELEASE_ROOT:?}"
+readonly PROMOTE_STATE_ROOT="${WHATSAPP_PROMOTE_STATE_ROOT:?}"
+readonly CANDIDATE_GROUP="${WHATSAPP_CANDIDATE_GROUP:?}"
+readonly RELEASE_GROUP="${WHATSAPP_RELEASE_GROUP:?}"
+readonly HEALTH_PERSONAL="${WHATSAPP_HEALTH_URL_PERSONAL:?}"
+readonly HEALTH_BUSINESS="${WHATSAPP_HEALTH_URL_BUSINESS:?}"
+readonly RELEASES="$RELEASE_ROOT/releases"
+readonly CURRENT_LINK="$RELEASE_ROOT/current"
+readonly PENDING_FILE="$PROMOTE_STATE_ROOT/activation.pending"
+readonly REJECTED_DIR="$PROMOTE_STATE_ROOT/rejected"
+readonly LOCK_FILE="$PROMOTE_STATE_ROOT/promote.lock"
+
+valid_local_health_url() {
+  local url="$1" port
+  [[ "$url" =~ ^http://127\.0\.0\.1:([0-9]{1,5})/health$ ]] || return 1
+  port="${BASH_REMATCH[1]}"
+  (( 10#$port > 0 && 10#$port <= 65535 ))
+}
+
+valid_local_health_url "$HEALTH_PERSONAL" || die 'personal health URL must be loopback /health without credentials or query'
+valid_local_health_url "$HEALTH_BUSINESS" || die 'Business health URL must be loopback /health without credentials or query'
+for dir in "$CANDIDATE_ROOT" "$RELEASE_ROOT" "$PROMOTE_STATE_ROOT"; do
+  [[ "$dir" == /* && "$dir" != / && ! -L "$dir" ]] || die 'invalid service directory'
+done
+[[ -d "$CANDIDATE_ROOT" && -d "$RELEASE_ROOT" && -d "$PROMOTE_STATE_ROOT" ]] || die 'promoter directories must be provisioned first'
+[[ ! -L "$RELEASES" && ! -L "$PROMOTE_STATE_ROOT" ]] || die 'release/state directories may not be symlinks'
+[[ -L "$CURRENT_LINK" ]] || die 'an independently verified bootstrap release is required before automatic promotion'
+
+for command in git python3 curl tar chgrp chmod find systemctl; do
+  command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
+done
+for required_group in "$CANDIDATE_GROUP" "$RELEASE_GROUP"; do
+  id -nG | tr ' ' '\n' | grep -Fxq "$required_group" || die "promoter lacks required group: $required_group"
+done
+
+remote_sha() {
+  local ref="$1" output sha returned_ref extra
+  output="$(git ls-remote --exit-code --refs "$REPOSITORY" "$ref")" || return 1
+  IFS=$'\t' read -r sha returned_ref extra <<<"$output"
+  [[ -z "${extra:-}" && "$returned_ref" == "$ref" ]] || return 1
+  valid_sha "$sha" || return 1
+  printf '%s\n' "$sha"
+}
+
+current_target() {
+  local target releases_real
+  target="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$CURRENT_LINK")" || return 1
+  releases_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RELEASES")" || return 1
+  case "$target" in "$releases_real"/*) ;; *) return 1 ;; esac
+  [[ -d "$target" ]] || return 1
+  printf '%s\n' "$target"
+}
+
+switch_current() {
+  local sha="$1" target="$RELEASES/$1" temporary="$RELEASE_ROOT/.current.$$.tmp"
+  valid_sha "$sha" || return 1
+  [[ -d "$target" && ! -L "$target" ]] || return 1
+  rm -f -- "$temporary"
+  ln -s -- "$target" "$temporary"
+  python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$temporary" "$CURRENT_LINK"
+}
+
+restart_adapters() {
+  systemctl restart "$PERSONAL_UNIT" && systemctl restart "$BUSINESS_UNIT"
+}
+
+health_once() {
+  local url="$1" adapter="$2" profile="$3" revision="$4" body
+  body="$(curl --disable --noproxy '*' --silent --show-error --fail --max-time 3 "$url")" || return 1
+  printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+expected = {"adapter": sys.argv[1], "profileId": sys.argv[2], "releaseRevision": sys.argv[3], "configured": True, "status": "configured"}
+raise SystemExit(0 if all(data.get(key) == value for key, value in expected.items()) else 1)
+' "$adapter" "$profile" "$revision"
+}
+
+wait_health() {
+  local revision="$1" attempt
+  for attempt in {1..20}; do
+    if health_once "$HEALTH_PERSONAL" "$PERSONAL_ADAPTER" "$PERSONAL_PROFILE" "$revision" \
+      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+is_rejected() { [[ -f "$REJECTED_DIR/$1" && ! -L "$REJECTED_DIR/$1" ]]; }
+
+mark_rejected() {
+  local sha="$1" temporary="$PROMOTE_STATE_ROOT/.rejected.$$.tmp"
+  valid_sha "$sha" || return 1
+  printf '%s\n' "$sha" >"$temporary"
+  chmod 0600 "$temporary"
+  mkdir -p -m 0700 "$REJECTED_DIR"
+  python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$temporary" "$REJECTED_DIR/$sha"
+}
+
+write_pending() {
+  local old_sha="$1" new_sha="$2" phase="$3" temporary="$PROMOTE_STATE_ROOT/.activation.$$.tmp"
+  printf '%s\n%s\n%s\n' "$old_sha" "$new_sha" "$phase" >"$temporary"
+  chmod 0600 "$temporary"
+  python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$temporary" "$PENDING_FILE"
+}
+
+read_candidate() {
+  local sha="$1" candidate="$CANDIDATE_ROOT/$1" output="$PROMOTE_STATE_ROOT/.candidate.$$.tar.gz"
+  python3 - "$candidate" "$output" "$sha" "$REPOSITORY" "$READY_REF" <<'PY'
+import hashlib, os, stat, sys
+
+candidate, destination, sha, repository, ready_ref = sys.argv[1:]
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+dir_flags = flags | getattr(os, "O_DIRECTORY", 0)
+candidate_fd = os.open(candidate, dir_flags)
+try:
+    manifest_fd = os.open("manifest.txt", flags | getattr(os, "O_NONBLOCK", 0), dir_fd=candidate_fd)
+    manifest_info = os.fstat(manifest_fd)
+    if not stat.S_ISREG(manifest_info.st_mode) or manifest_info.st_size > 8192:
+        os.close(manifest_fd)
+        raise SystemExit("manifest type or size rejected")
+    with os.fdopen(manifest_fd, "rb") as f:
+        manifest_bytes = f.read(8193)
+    if len(manifest_bytes) > 8192:
+        raise SystemExit("manifest too large")
+    fields = {}
+    for line in manifest_bytes.decode("ascii").splitlines():
+        if "=" not in line:
+            raise SystemExit("invalid manifest line")
+        key, value = line.split("=", 1)
+        if key in fields:
+            raise SystemExit("duplicate manifest key")
+        fields[key] = value
+    expected = {"schema": "1", "repository": repository, "ref": ready_ref, "commit": sha}
+    if any(fields.get(key) != value for key, value in expected.items()):
+        raise SystemExit("manifest identity mismatch")
+    if set(fields) != set(expected) | {"archive_sha256"}:
+        raise SystemExit("unexpected manifest fields")
+    expected_hash = fields.get("archive_sha256", "")
+    if len(expected_hash) != 64 or any(char not in "0123456789abcdef" for char in expected_hash):
+        raise SystemExit("invalid archive hash")
+    archive_fd = os.open("release.tar.gz", flags | getattr(os, "O_NONBLOCK", 0), dir_fd=candidate_fd)
+    info = os.fstat(archive_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 2_000_000_000:
+        os.close(archive_fd)
+        raise SystemExit("archive type or size rejected")
+    digest = hashlib.sha256()
+    out_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(archive_fd, "rb") as source, os.fdopen(out_fd, "wb") as target:
+        while True:
+            block = source.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            target.write(block)
+    if digest.hexdigest() != expected_hash:
+        os.unlink(destination)
+        raise SystemExit("archive digest mismatch")
+finally:
+    os.close(candidate_fd)
+PY
+}
+
+extract_candidate() {
+  local archive="$1" destination="$2" sha="$3"
+  python3 - "$archive" "$destination" "$sha" <<'PY'
+import os, pathlib, sys, tarfile
+
+archive, destination, sha = sys.argv[1:]
+os.mkdir(destination, 0o700)
+max_entries = 200_000
+max_unpacked_bytes = 4_000_000_000
+with tarfile.open(archive, "r:gz") as bundle:
+    members = bundle.getmembers()
+    if len(members) > max_entries:
+        raise SystemExit("too many archive entries")
+    total_bytes = 0
+    for item in members:
+        name = pathlib.PurePosixPath(item.name)
+        if name.is_absolute() or ".." in name.parts:
+            raise SystemExit("archive path escapes the release root")
+        if item.islnk() or item.isdev() or item.isfifo():
+            raise SystemExit("hard links and special files are not accepted")
+        if item.issym():
+            link = pathlib.PurePosixPath(item.linkname)
+            if link.is_absolute():
+                raise SystemExit("absolute symlink rejected")
+        elif not (item.isdir() or item.isfile()):
+            raise SystemExit("unsupported archive entry type")
+        if item.isfile():
+            total_bytes += item.size
+            if total_bytes > max_unpacked_bytes:
+                raise SystemExit("archive expands beyond the size limit")
+    bundle.extractall(destination, members=members, filter="data")
+
+marker = pathlib.Path(destination) / ".whatsapp-release-sha"
+entry = pathlib.Path(destination) / "dist" / "http-server.js"
+if marker.is_symlink() or not marker.is_file() or marker.read_text("ascii").strip() != sha:
+    raise SystemExit("release marker does not match candidate SHA")
+if entry.is_symlink() or not entry.is_file():
+    raise SystemExit("native HTTP entrypoint missing or symlinked")
+PY
+}
+
+prepare_release() {
+  local sha="$1" archive="$PROMOTE_STATE_ROOT/.candidate.$$.tar.gz"
+  local temp_release="$RELEASES/.release.$$.tmp" final_release="$RELEASES/$1"
+  if [[ -e "$final_release" ]]; then
+    [[ -d "$final_release" && ! -L "$final_release" && -f "$final_release/.whatsapp-release-sha" ]] || return 1
+    [[ "$(cat "$final_release/.whatsapp-release-sha")" == "$sha" && -f "$final_release/dist/http-server.js" ]] || return 1
+    return 0
+  fi
+  rm -f -- "$archive"
+  rm -rf -- "$temp_release"
+  if ! read_candidate "$sha"; then
+    rm -f -- "$archive"
+    return 1
+  fi
+  if ! extract_candidate "$archive" "$temp_release" "$sha"; then
+    rm -rf -- "$temp_release"
+    rm -f -- "$archive"
+    return 1
+  fi
+  rm -f -- "$archive"
+  chgrp -R "$RELEASE_GROUP" "$temp_release"
+  find "$temp_release" -type d -exec chmod 2750 {} +
+  find "$temp_release" -type f -exec chmod g+r,g-w,o-rwx {} +
+  python3 -c 'import os,sys; os.rename(sys.argv[1], sys.argv[2])' "$temp_release" "$final_release"
+}
+
+retry_sha=''
+dry_run=0
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --retry) [[ "$#" -ge 2 ]] || die 'usage: promote-ready-release.sh [--dry-run] [--retry SHA]'; retry_sha="$2"; shift 2 ;;
+    *) die 'usage: promote-ready-release.sh [--dry-run] [--retry SHA]' ;;
+  esac
+done
+[[ -z "$retry_sha" ]] || valid_sha "$retry_sha" || die 'retry SHA must be exactly 40 lowercase hex characters'
+
+lock_dir=''
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || { log 'another promotion owns the private lock; skip'; exit 0; }
+else
+  lock_dir="$LOCK_FILE.d"
+  mkdir "$lock_dir" 2>/dev/null || { log 'another promotion owns the private lock; skip'; exit 0; }
+  trap 'rmdir -- "$lock_dir" 2>/dev/null || true' EXIT
+fi
+
+recover_pending() {
+  [[ -f "$PENDING_FILE" && ! -L "$PENDING_FILE" ]] || return 0
+  local -a pending=()
+  local line old_sha new_sha
+  while IFS= read -r line; do pending+=("$line"); done <"$PENDING_FILE"
+  [[ "${#pending[@]}" -eq 3 ]] || die 'invalid activation journal; manual recovery required'
+  old_sha="${pending[0]}"
+  new_sha="${pending[1]}"
+  valid_sha "$old_sha" && valid_sha "$new_sha" || die 'invalid activation journal SHA; manual recovery required'
+  [[ "$old_sha" != "$new_sha" ]] || die 'activation journal must name distinct releases'
+  [[ -d "$RELEASES/$old_sha" && -d "$RELEASES/$new_sha" ]] || die 'activation journal release missing; manual recovery required'
+  log "recover interrupted activation; quarantine $new_sha and restore $old_sha"
+  mark_rejected "$new_sha" || die 'could not quarantine interrupted candidate'
+  switch_current "$old_sha" || die 'cannot restore release symlink during recovery'
+  restart_adapters || die 'service restart failed during recovery'
+  wait_health "$old_sha" || die 'previous release health failed during recovery'
+  rm -f -- "$PENDING_FILE"
+  log "recovered activation to $old_sha; stop this run before another promotion"
+  exit 0
+}
+
+if [[ "$dry_run" -eq 1 ]]; then
+  ready_sha="$(remote_sha "$READY_REF")" || die 'cannot read exactly one deploy-ready ref'
+  main_sha="$(remote_sha "$MAIN_REF")" || die 'cannot read exactly one main ref'
+  [[ "$ready_sha" == "$main_sha" ]] || { log 'deploy-ready is not the current main; skip'; exit 0; }
+  [[ -d "$CANDIDATE_ROOT/$ready_sha" ]] || { log "candidate $ready_sha has not been staged"; exit 0; }
+  if is_rejected "$ready_sha" && [[ "$retry_sha" != "$ready_sha" ]]; then
+    log "SHA $ready_sha is quarantined; explicit --retry $ready_sha required"
+    exit 0
+  fi
+  log "dry-run: would validate and promote $ready_sha"
+  exit 0
+fi
+
+recover_pending
+ready_sha="$(remote_sha "$READY_REF")" || die 'cannot read exactly one deploy-ready ref'
+main_sha="$(remote_sha "$MAIN_REF")" || die 'cannot read exactly one main ref'
+[[ "$ready_sha" == "$main_sha" ]] || { log 'deploy-ready is not the current main; skip'; exit 0; }
+[[ -z "$retry_sha" || "$retry_sha" == "$ready_sha" ]] || die 'manual retry must match the current tested ref'
+
+if is_rejected "$ready_sha"; then
+  [[ "$retry_sha" == "$ready_sha" ]] || { log "SHA $ready_sha is quarantined; explicit --retry $ready_sha required"; exit 0; }
+fi
+
+old_release="$(current_target)" || die 'current symlink target is outside the release root'
+old_sha="$(basename "$old_release")"
+valid_sha "$old_sha" || die 'current release directory is not named by a SHA'
+[[ "$(cat "$old_release/.whatsapp-release-sha")" == "$old_sha" ]] || die 'current release marker mismatch'
+if [[ "$ready_sha" == "$old_sha" ]]; then
+  log "release $ready_sha is already active"
+  exit 0
+fi
+[[ -d "$CANDIDATE_ROOT/$ready_sha" ]] || { log "candidate $ready_sha has not been staged"; exit 0; }
+
+# Recheck trusted refs after archive validation and before activation.
+prepare_release "$ready_sha" || die 'candidate archive rejected or release already inconsistent'
+ready_after="$(remote_sha "$READY_REF")" || die 'cannot re-read deploy-ready ref'
+main_after="$(remote_sha "$MAIN_REF")" || die 'cannot re-read main ref'
+[[ "$ready_after" == "$ready_sha" && "$main_after" == "$ready_sha" ]] || { log 'tested ref changed before promotion; skip'; exit 0; }
+
+write_pending "$old_sha" "$ready_sha" activating
+switch_current "$ready_sha" || die 'cannot atomically switch active release'
+if restart_adapters && wait_health "$ready_sha"; then
+  rm -f -- "$REJECTED_DIR/$ready_sha"
+  rm -f -- "$PENDING_FILE"
+  log "promoted tested release $ready_sha"
+  exit 0
+fi
+
+log "release $ready_sha failed identity/configured health checks; rolling back to $old_sha"
+switch_current "$old_sha" || die 'rollback symlink failed; activation journal retained'
+restart_adapters || die 'rollback restart failed; activation journal retained'
+wait_health "$old_sha" || die 'rollback health failed; activation journal retained'
+mark_rejected "$ready_sha" || die 'could not persist rejected-SHA quarantine'
+rm -f -- "$PENDING_FILE"
+die "candidate $ready_sha failed; previous release restored and SHA quarantined"

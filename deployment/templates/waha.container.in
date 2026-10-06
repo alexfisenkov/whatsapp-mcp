@@ -1,0 +1,30 @@
+# Rootless Podman Quadlet example. Substitute the private paths before use.
+# Place under the dedicated WAHA user's ~/.config/containers/systemd/.
+[Unit]
+Description=WhatsApp linked-device provider (WAHA NOWEB)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=devlikeapro/waha:noweb-2026.9.2@sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659
+ContainerName=whatsapp-waha
+Network=slirp4netns:allow_host_loopback=false
+PublishPort=127.0.0.1:@WAHA_LOOPBACK_PORT@:3000/tcp
+Volume=@WAHA_SESSION_DIR@:/app/.sessions:rw
+Environment=WHATSAPP_DEFAULT_ENGINE=NOWEB
+Environment=WAHA_PRINT_QR=False
+EnvironmentFile=@WAHA_PRIVATE_ENV_FILE@
+ReadOnly=true
+ReadOnlyTmpfs=true
+NoNewPrivileges=true
+DropCapability=all
+Memory=1g
+PidsLimit=512
+LogDriver=journald
+
+[Service]
+CPUQuota=200%
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

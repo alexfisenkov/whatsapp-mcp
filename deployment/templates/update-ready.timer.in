@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a CI-approved WhatsApp MCP release once per minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=whatsapp-mcp-stage.service
+
+[Install]
+WantedBy=timers.target

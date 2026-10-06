@@ -1,0 +1,29 @@
+[Unit]
+Description=Validate and atomically promote a staged WhatsApp MCP release
+
+[Service]
+Type=oneshot
+User=@PROMOTE_USER@
+Group=@PROMOTE_GROUP@
+SupplementaryGroups=@CANDIDATE_GROUP@ @RELEASE_GROUP@
+EnvironmentFile=/etc/whatsapp-mcp/updater.env
+ExecStart=/usr/local/libexec/whatsapp-mcp-promote-ready-release
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=@CANDIDATE_ROOT@
+ReadWritePaths=@RELEASE_ROOT@ @PROMOTE_STATE_ROOT@
+InaccessiblePaths=-@STAGE_ROOT@ -@PERSONAL_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@
+PrivateDevices=yes
+CapabilityBoundingSet=
+MemoryMax=1G
+CPUQuota=100%
+TimeoutStartSec=5min
