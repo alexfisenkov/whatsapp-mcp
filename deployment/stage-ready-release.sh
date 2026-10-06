@@ -149,7 +149,7 @@ fi
 printf 'schema=1\nrepository=%s\nref=%s\ncommit=%s\narchive_sha256=%s\n' \
   "$REPOSITORY" "$READY_REF" "$ready_sha" "$archive_sha" >"$candidate_tmp/manifest.txt"
 chgrp -R "$CANDIDATE_GROUP" "$candidate_tmp"
-chmod 2750 "$candidate_tmp"
+chmod 0750 "$candidate_tmp"
 chmod 0640 "$candidate_tmp/release.tar.gz" "$candidate_tmp/manifest.txt"
 python3 -c 'import os,sys; os.rename(sys.argv[1], sys.argv[2])' "$candidate_tmp" "$candidate"
 candidate_tmp=''

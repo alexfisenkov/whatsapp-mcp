@@ -261,7 +261,7 @@ prepare_release() {
   fi
   rm -f -- "$archive"
   chgrp -R "$RELEASE_GROUP" "$temp_release"
-  find "$temp_release" -type d -exec chmod 2750 {} +
+  find "$temp_release" -type d -exec chmod 0750 {} +
   find "$temp_release" -type f -exec chmod g+r,g-w,o-rwx {} +
   python3 -c 'import os,sys; os.rename(sys.argv[1], sys.argv[2])' "$temp_release" "$final_release"
 }

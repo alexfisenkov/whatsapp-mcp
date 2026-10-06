@@ -132,6 +132,9 @@ grep -q 'InaccessiblePaths=-@STAGE_ROOT@ -@PERSONAL_STATE_ROOT@ -@BUSINESS_STATE
 grep -q 'subject.user === "@PROMOTE_USER@"' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit identity is not restricted'
 grep -q '\["restart", "stop"\].includes(action.lookup("verb"))' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit verbs are not restricted to restart/stop'
 grep -q 'Network=slirp4netns:allow_host_loopback=false' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA rootless network does not explicitly deny host-loopback access'
+grep -Fq 'chmod 0750 "$candidate_tmp"' "$STAGE_SCRIPT" || fail 'stager candidate directory must be group-readable without setgid privilege'
+grep -Fq 'find "$temp_release" -type d -exec chmod 0750 {} +' "$PROMOTE_SCRIPT" || fail 'promoted directories must be group-readable without setgid privilege'
+if grep -Eq 'chmod 2[0-7]{3}' "$STAGE_SCRIPT" "$PROMOTE_SCRIPT"; then fail 'unprivileged updater attempts to set setgid directory bits'; fi
 if WHATSAPP_STAGE_USER=not-the-running-user "$STAGE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'stage helper accepted an unexpected Unix identity'; fi
 if WHATSAPP_PROMOTE_USER=not-the-running-user "$PROMOTE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'promoter accepted an unexpected Unix identity'; fi
 
