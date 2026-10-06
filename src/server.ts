@@ -1,4 +1,6 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createMcpServer } from './mcp-server.js';
 import { createServiceRuntime } from './runtime.js';
 
@@ -21,10 +23,19 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL(process.argv[1]).href) {
+if (isMainEntrypoint(import.meta.url, process.argv[1])) {
   void main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'Startup failed.';
     process.stderr.write(`WhatsApp MCP startup failed: ${message}\n`);
     process.exitCode = 1;
   });
+}
+
+function isMainEntrypoint(moduleUrl: string, argvPath: string | undefined): boolean {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === fileURLToPath(moduleUrl);
+  } catch {
+    return false;
+  }
 }

@@ -3,8 +3,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import type { McpAdapter, AdapterOperation } from './mcp-server.js';
-import { createMetaCloudAdapter } from './providers/graph/index.js';
-import { createWahaPersonalAdapter } from './providers/waha/index.js';
+import { createMetaCloudAdapter, type MetaCloudAdapterConfig } from './providers/graph/index.js';
+import { createWahaPersonalAdapter, type WahaPersonalConfig } from './providers/waha/index.js';
 import { ManagedMediaStore } from './media-store.js';
 import { MutationCoordinator, type MutationCaller } from './mutations.js';
 import { SqliteAuditStore } from './sqlite-audit.js';
@@ -44,7 +44,9 @@ export async function createServiceRuntime(
   const historyStore = historyPath && isAbsolute(historyPath) ? new SqliteHistoryStore(historyPath) : undefined;
   if (!historyStore) missing.push('WHATSAPP_HISTORY_DB_PATH');
 
-  const providerConfig = readProviderConfig(adapterKind, env, mediaStore, missing);
+  const providerConfig = adapterKind === 'linked-device'
+    ? readProviderConfig('linked-device', env, mediaStore, missing)
+    : readProviderConfig('business-graph', env, mediaStore, missing);
   const requiredProviderVariables = adapterKind === 'linked-device'
     ? ['WHATSAPP_ACCOUNT_ID', 'WAHA_BASE_URL', 'WAHA_API_KEY', 'WAHA_SESSION_NAME']
     : ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_BUSINESS_ACCOUNT_ID', 'WHATSAPP_GRAPH_ACCESS_TOKEN'];
@@ -52,9 +54,9 @@ export async function createServiceRuntime(
     && requiredProviderVariables.every((name) => !missing.includes(name));
   let adapter: McpAdapter;
   if (providerConfigured) {
-    adapter = adapterKind === 'linked-device'
-      ? createWahaPersonalAdapter(providerConfig as unknown as Parameters<typeof createWahaPersonalAdapter>[0])
-      : createMetaCloudAdapter(providerConfig as unknown as Parameters<typeof createMetaCloudAdapter>[0]);
+    adapter = 'apiKey' in providerConfig
+      ? createWahaPersonalAdapter(providerConfig)
+      : createMetaCloudAdapter(providerConfig);
   } else {
     adapter = createUnconfiguredAdapter(adapterKind, missing);
   }
@@ -113,7 +115,7 @@ export async function createServiceRuntime(
   });
 
   const metaWebhook = configured && adapterKind === 'business-graph' && historyStore
-    && env.WHATSAPP_META_APP_SECRET && env.WHATSAPP_META_VERIFY_TOKEN
+    && env.WHATSAPP_META_APP_SECRET && env.WHATSAPP_META_VERIFY_TOKEN && 'accessToken' in providerConfig
     ? makeMetaWebhookConfig(providerConfig, historyStore, env)
     : undefined;
 
@@ -163,24 +165,36 @@ function resolveReleaseRevision(env: NodeJS.ProcessEnv): string {
 }
 
 function readProviderConfig(
+  adapter: 'linked-device',
+  env: NodeJS.ProcessEnv,
+  mediaStore: ManagedMediaStore | undefined,
+  missing: string[],
+): WahaPersonalConfig;
+function readProviderConfig(
+  adapter: 'business-graph',
+  env: NodeJS.ProcessEnv,
+  mediaStore: ManagedMediaStore | undefined,
+  missing: string[],
+): MetaCloudAdapterConfig;
+function readProviderConfig(
   adapter: 'linked-device' | 'business-graph',
   env: NodeJS.ProcessEnv,
   mediaStore: ManagedMediaStore | undefined,
   missing: string[],
-): Record<string, unknown> {
+): WahaPersonalConfig | MetaCloudAdapterConfig {
   if (adapter === 'linked-device') {
     const accountId = env.WHATSAPP_ACCOUNT_ID?.trim() ?? '';
     const baseUrl = env.WAHA_BASE_URL?.trim() ?? '';
-    const wahaApiCredential = env.WAHA_API_KEY ?? '';
+    const apiKey = env.WAHA_API_KEY ?? '';
     const sessionName = env.WAHA_SESSION_NAME?.trim() ?? '';
     for (const [key, value] of Object.entries({
       WHATSAPP_ACCOUNT_ID: accountId,
       WAHA_BASE_URL: baseUrl,
-      [['WAHA_API', 'KEY'].join('_')]: wahaApiCredential,
+      WAHA_API_KEY: apiKey,
       WAHA_SESSION_NAME: sessionName,
     })) if (!value) missing.push(key);
     return {
-      accountId, baseUrl, [['api', 'key'].join('')]: wahaApiCredential, sessionName,
+      accountId, baseUrl, apiKey, sessionName,
       ...(mediaStore ? { mediaStore } : {}),
       enableGroupAdministration: env.WAHA_ENABLE_GROUP_ADMIN === 'true',
       enableStatusPosting: env.WAHA_ENABLE_STATUS_POSTING === 'true',
@@ -193,13 +207,13 @@ function readProviderConfig(
   for (const [key, value] of Object.entries({
     WHATSAPP_PHONE_NUMBER_ID: phoneNumberId,
     WHATSAPP_BUSINESS_ACCOUNT_ID: businessAccountId,
-    [['WHATSAPP_GRAPH_ACCESS', 'TOKEN'].join('_')]: graphAccessCredential,
+    WHATSAPP_GRAPH_ACCESS_TOKEN: graphAccessCredential,
   })) if (!value) missing.push(key);
   return {
     accountId: phoneNumberId,
     phoneNumberId,
     businessAccountId,
-    [['access', 'token'].join('')]: graphAccessCredential,
+    accessToken: graphAccessCredential,
     graphApiVersion: env.WHATSAPP_GRAPH_API_VERSION ?? 'v24.0',
     enableAdminTools: env.WHATSAPP_GRAPH_ADMIN_TOOLS === 'true',
     ...(mediaStore ? { mediaStore } : {}),
@@ -267,11 +281,11 @@ function createConfiguredMediaStore(directory: string): ManagedMediaStore {
   return new ManagedMediaStore(path);
 }
 
-function makeMetaWebhookConfig(provider: Record<string, unknown>, store: SqliteHistoryStore, env: NodeJS.ProcessEnv): MetaWebhookConfig {
+function makeMetaWebhookConfig(provider: MetaCloudAdapterConfig, store: SqliteHistoryStore, env: NodeJS.ProcessEnv): MetaWebhookConfig {
   const processor = new MetaWebhookProcessor({
-    accountId: String(provider.accountId),
-    phoneNumberId: String(provider.phoneNumberId),
-    businessAccountId: String(provider.businessAccountId),
+    accountId: provider.accountId,
+    phoneNumberId: provider.phoneNumberId,
+    businessAccountId: provider.businessAccountId,
     store,
   });
   return {

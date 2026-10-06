@@ -6,7 +6,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-Image=devlikeapro/waha:noweb-2026.9.2@sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659
+Image=docker.io/devlikeapro/waha:noweb-2026.9.2@sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659
 ContainerName=whatsapp-waha
 Network=slirp4netns:allow_host_loopback=false
 PublishPort=127.0.0.1:@WAHA_LOOPBACK_PORT@:3000/tcp
@@ -18,7 +18,7 @@ ReadOnly=true
 ReadOnlyTmpfs=true
 NoNewPrivileges=true
 DropCapability=all
-Memory=1g
+PodmanArgs=--memory=1g
 PidsLimit=512
 LogDriver=journald
 

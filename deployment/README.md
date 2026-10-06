@@ -134,7 +134,8 @@ app state, or credentials; it reads the candidate exchange and writes only
 release/promotion state. It validates the manifest, repository/ref/SHA, archive
 digest and archive paths, copies the candidate into an immutable release, then
 atomically switches `current`. It never executes candidate code. A narrow
-polkit rule permits restart of only the two WhatsApp adapter units.
+polkit rule permits restart of the two WhatsApp adapter units and stop of those
+same units only when an initial bootstrap has no prior release to restore.
 
 The root-owned `/etc/whatsapp-mcp/updater.env` contains only non-secret service
 names, private path values, the candidate/release group names, and the two
@@ -143,18 +144,25 @@ The staging and promoter systemd units load the same file; filesystem sandboxing
 enforces their different access sets. App credentials belong only in each
 profile's separate private `EnvironmentFile`.
 
-Readiness requires both loopback endpoints to return JSON matching the candidate
-revision, expected adapter (`linked-device` or `business-graph`), expected
-profile (`personal-owner` or `business-owner`), `configured: true`, and
-`status: configured`. Any mismatch restores the prior release and restarts both
-services. The rejected SHA is persisted and skipped on later timer runs; an
-operator must request `--retry <same-40-hex-SHA>` explicitly or wait for a new
-tested SHA. A journal outside releases recovers interrupted activation. Session,
-media, SQLite history, audit state, and credentials remain outside the release
-tree. Recovery quarantines the interrupted candidate and stops that promoter
-run; the next timer tick cannot immediately reactivate the same SHA. Keep schema
-changes backward-compatible across current and previous application releases;
-code rollback does not rewind databases.
+Readiness always requires both loopback endpoints to report the candidate
+revision, expected adapter (`linked-device` or `business-graph`), and expected
+profile (`personal-owner` or `business-owner`). The one-time initial bootstrap
+also accepts either truthful state pair: `configured: true` with
+`status: configured`, or `configured: false` with `status: not_configured`.
+This lets the owner bring up an empty WAHA session and a Business profile before
+issuing Meta credentials; it does not claim that either account is connected.
+All later releases require the configured state pair for both profiles. A
+mismatch restores the prior release and restarts both services. When there is no
+prior release, a failed bootstrap stops both services, removes the active link
+and failed release, and leaves its tested SHA quarantined. The rejected SHA is
+skipped on later timer runs; an operator must request `--retry
+<same-40-hex-SHA>` explicitly or wait for a new tested SHA. A journal outside
+releases recovers interrupted activation. Session, media, SQLite history, audit
+state, and credentials remain outside the release tree. Recovery quarantines
+the interrupted candidate and stops that promoter run; the next timer tick
+cannot immediately reactivate the same SHA. Keep schema changes
+backward-compatible across current and previous application releases; code
+rollback does not rewind databases.
 
 The MCP service UIDs share only a read-only release group. The promoter has the
 separate promoter state and release write access; the stager cannot write either.
@@ -163,10 +171,15 @@ directories. WAHA has a separate identity and is not a member of the app release
 group.
 
 The timer is enabled only after an independently verified bootstrap release,
-service health, both distinct service identities, path permissions, polkit rule,
-and rollback smoke test are installed and checked. The WAHA image remains pinned
-independently; this GitHub application updater does not pull or upgrade provider
-images.
+both profiles report configured health, distinct service identities, path
+permissions, the exact polkit rule, and rollback smoke tests are installed and
+checked. The WAHA image remains pinned independently; this GitHub application
+updater promotes only the tested Node application source and lockfile
+dependencies. It does not upgrade the host Node runtime, OS packages, WAHA image,
+Quadlet/systemd/nginx templates, or the private cloud OAuth gateway and profile
+configuration. Those changes require a separate reviewed deployment procedure;
+provider image changes also require a state backup and compatibility/rollback
+check.
 
 Automatic update is blocked until the server has the timer, initial verified
 release, exact polkit rule, state-backup policy, and rollback smoke test
@@ -195,7 +208,9 @@ Before linking a personal account or issuing a Business credential, validate:
    serves the new version after health success, and restores the prior release
    after a forced health failure. Also simulate a process interruption after
    symlink switch and prove the next timer run recovers from the external
-   activation journal.
+   activation journal. On an empty release root, also force a failed initial
+   bootstrap and verify both services stop, the active link is removed, and the
+   SHA is quarantined until an explicit healthy retry.
 
 Do not scan a real QR, connect an account, send a message, or accept live Meta
 webhooks during staging acceptance.

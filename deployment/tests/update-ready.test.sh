@@ -81,12 +81,16 @@ profile=personal-owner
 revision="$active"
 configured=true
 status=configured
+if [[ "$active" == "${TEST_HEALTH_UNCONFIGURED_SHA:-}" ]]; then
+  configured=false
+  status=not_configured
+fi
 if [[ "$active" == "${TEST_HEALTH_FAIL_SHA:-}" ]]; then
   case "${TEST_HEALTH_FAILURE_KIND:-revision}" in
     revision) revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
     profile) profile=wrong-profile ;;
     adapter) adapter=wrong-adapter ;;
-    configured) configured=false; status=not_configured ;;
+    configured) configured=true; status=not_configured ;;
   esac
 fi
 printf '{"adapter":"%s","profileId":"%s","releaseRevision":"%s","configured":%s,"status":"%s"}\n' \
@@ -111,6 +115,7 @@ export TEST_READY_SHA="$GOOD_SHA" TEST_MAIN_SHA="$GOOD_SHA"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 current_sha() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).split("/")[-1])' "$WORK/releases/current"; }
+current_sha_at() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).split("/")[-1])' "$1/current"; }
 
 # Static unit assertions enforce the intended identity and filesystem split.
 stage_unit="$ROOT/deployment/templates/update-stage.service.in"
@@ -125,7 +130,7 @@ grep -q 'ReadOnlyPaths=@CANDIDATE_ROOT@' "$promote_unit" || fail 'promoter candi
 grep -q 'ReadWritePaths=@RELEASE_ROOT@ @PROMOTE_STATE_ROOT@' "$promote_unit" || fail 'promoter write set is incomplete or too broad'
 grep -q 'InaccessiblePaths=-@STAGE_ROOT@ -@PERSONAL_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@' "$promote_unit" || fail 'promoter can access stage-private or app data'
 grep -q 'subject.user === "@PROMOTE_USER@"' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit identity is not restricted'
-grep -q 'action.lookup("verb") === "restart"' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit verb is not restricted'
+grep -q '\["restart", "stop"\].includes(action.lookup("verb"))' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit verbs are not restricted to restart/stop'
 grep -q 'Network=slirp4netns:allow_host_loopback=false' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA rootless network does not explicitly deny host-loopback access'
 if WHATSAPP_STAGE_USER=not-the-running-user "$STAGE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'stage helper accepted an unexpected Unix identity'; fi
 if WHATSAPP_PROMOTE_USER=not-the-running-user "$PROMOTE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'promoter accepted an unexpected Unix identity'; fi
@@ -219,3 +224,39 @@ export TEST_HEALTH_FAIL_SHA=''
 [[ ! -e "$WORK/promote-state/rejected/$BAD_PROFILE_SHA" ]] || fail 'successful explicit retry kept stale quarantine'
 
 printf 'PASS: identity isolation templates, in-stage npm cache, candidate promotion, stage/promoter quarantine, revision/profile rollback, retry-failure persistence, interrupted activation recovery and same-SHA timer skip\n'
+
+# First install has no old release: bootstrap accepts an honest not_configured report.
+BOOTSTRAP_SHA='7777777777777777777777777777777777777777'
+BOOTSTRAP_FAIL_SHA='8888888888888888888888888888888888888888'
+mkdir -p "$WORK/bootstrap/releases" "$WORK/bootstrap-state" "$WORK/bootstrap-fail/releases" "$WORK/bootstrap-fail-state"
+make_candidate "$BOOTSTRAP_SHA"
+export WHATSAPP_RELEASE_ROOT="$WORK/bootstrap" WHATSAPP_PROMOTE_STATE_ROOT="$WORK/bootstrap-state"
+export TEST_READY_SHA="$BOOTSTRAP_SHA" TEST_MAIN_SHA="$BOOTSTRAP_SHA" TEST_HEALTH_UNCONFIGURED_SHA="$BOOTSTRAP_SHA"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/bootstrap")" == "$BOOTSTRAP_SHA" ]] || fail 'bootstrap did not activate first release'
+[[ ! -e "$WORK/bootstrap-state/activation.pending" ]] || fail 'bootstrap activation journal was not cleared'
+
+# Failed first release stops both app services, removes current/release, and quarantines its SHA.
+make_candidate "$BOOTSTRAP_FAIL_SHA"
+export WHATSAPP_RELEASE_ROOT="$WORK/bootstrap-fail" WHATSAPP_PROMOTE_STATE_ROOT="$WORK/bootstrap-fail-state"
+export TEST_READY_SHA="$BOOTSTRAP_FAIL_SHA" TEST_MAIN_SHA="$BOOTSTRAP_FAIL_SHA"
+export TEST_HEALTH_UNCONFIGURED_SHA='' TEST_HEALTH_FAIL_SHA="$BOOTSTRAP_FAIL_SHA" TEST_HEALTH_FAILURE_KIND=revision
+n_before_boot_failure="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/bootstrap-failure.log" 2>&1; then fail 'unhealthy first release was accepted'; fi
+[[ ! -e "$WORK/bootstrap-fail/current" && ! -L "$WORK/bootstrap-fail/current" ]] || fail 'failed bootstrap left a current symlink'
+[[ ! -e "$WORK/bootstrap-fail/releases/$BOOTSTRAP_FAIL_SHA" ]] || fail 'failed bootstrap left a release without a rollback target'
+[[ -f "$WORK/bootstrap-fail-state/rejected/$BOOTSTRAP_FAIL_SHA" ]] || fail 'failed bootstrap SHA was not quarantined'
+[[ ! -e "$WORK/bootstrap-fail-state/activation.pending" ]] || fail 'failed bootstrap journal was not cleared after stop'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_boot_failure + 4))" ]] || fail 'bootstrap failure did not restart then stop exactly the two app services'
+
+# Same-refs timer tick skips a failed bootstrap, but a healthy explicit retry can bootstrap it.
+n_after_boot_failure="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+output="$("$PROMOTE_SCRIPT" 2>&1)" || fail "failed-bootstrap timer tick errored: $output"
+[[ "$output" == *'explicit --retry'* ]] || fail 'failed bootstrap SHA was not skipped'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$n_after_boot_failure" ]] || fail 'quarantined bootstrap tick touched service state'
+export TEST_HEALTH_FAIL_SHA=''
+"$PROMOTE_SCRIPT" --retry "$BOOTSTRAP_FAIL_SHA"
+[[ "$(current_sha_at "$WORK/bootstrap-fail")" == "$BOOTSTRAP_FAIL_SHA" ]] || fail 'healthy explicit bootstrap retry did not activate'
+[[ ! -e "$WORK/bootstrap-fail-state/rejected/$BOOTSTRAP_FAIL_SHA" ]] || fail 'healthy bootstrap retry left quarantine'
+
+printf 'PASS: no-current bootstrap, truthful not_configured health, bootstrap rollback-to-empty, same-SHA skip and explicit bootstrap retry\n'

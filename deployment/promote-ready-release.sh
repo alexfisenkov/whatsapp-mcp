@@ -46,9 +46,8 @@ valid_local_health_url "$HEALTH_BUSINESS" || die 'Business health URL must be lo
 for dir in "$CANDIDATE_ROOT" "$RELEASE_ROOT" "$PROMOTE_STATE_ROOT"; do
   [[ "$dir" == /* && "$dir" != / && ! -L "$dir" ]] || die 'invalid service directory'
 done
-[[ -d "$CANDIDATE_ROOT" && -d "$RELEASE_ROOT" && -d "$PROMOTE_STATE_ROOT" ]] || die 'promoter directories must be provisioned first'
+[[ -d "$CANDIDATE_ROOT" && -d "$RELEASE_ROOT" && -d "$RELEASES" && -d "$PROMOTE_STATE_ROOT" ]] || die 'promoter directories must be provisioned first'
 [[ ! -L "$RELEASES" && ! -L "$PROMOTE_STATE_ROOT" ]] || die 'release/state directories may not be symlinks'
-[[ -L "$CURRENT_LINK" ]] || die 'an independently verified bootstrap release is required before automatic promotion'
 
 for command in git python3 curl tar chgrp chmod find systemctl; do
   command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
@@ -88,8 +87,12 @@ restart_adapters() {
   systemctl restart "$PERSONAL_UNIT" && systemctl restart "$BUSINESS_UNIT"
 }
 
+stop_adapters() {
+  systemctl stop "$PERSONAL_UNIT" && systemctl stop "$BUSINESS_UNIT"
+}
+
 health_once() {
-  local url="$1" adapter="$2" profile="$3" revision="$4" body
+  local url="$1" adapter="$2" profile="$3" revision="$4" allow_unconfigured="${5:-false}" body
   body="$(curl --disable --noproxy '*' --silent --show-error --fail --max-time 3 "$url")" || return 1
   printf '%s' "$body" | python3 -c '
 import json, sys
@@ -97,16 +100,23 @@ try:
     data = json.load(sys.stdin)
 except Exception:
     raise SystemExit(1)
-expected = {"adapter": sys.argv[1], "profileId": sys.argv[2], "releaseRevision": sys.argv[3], "configured": True, "status": "configured"}
-raise SystemExit(0 if all(data.get(key) == value for key, value in expected.items()) else 1)
-' "$adapter" "$profile" "$revision"
+expected = {"adapter": sys.argv[1], "profileId": sys.argv[2], "releaseRevision": sys.argv[3]}
+if any(data.get(key) != value for key, value in expected.items()):
+    raise SystemExit(1)
+if data.get("configured") is True and data.get("status") == "configured":
+    raise SystemExit(0)
+if sys.argv[4] == "allow-unconfigured" and data.get("configured") is False and data.get("status") == "not_configured":
+    raise SystemExit(0)
+raise SystemExit(1)
+' "$adapter" "$profile" "$revision" "$allow_unconfigured"
 }
 
 wait_health() {
-  local revision="$1" attempt
+  local revision="$1" allow_unconfigured="${2:-false}" attempt
   for attempt in {1..20}; do
     if health_once "$HEALTH_PERSONAL" "$PERSONAL_ADAPTER" "$PERSONAL_PROFILE" "$revision" \
-      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision"; then
+      "$allow_unconfigured" \
+      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision" "$allow_unconfigured"; then
       return 0
     fi
     sleep 2
@@ -285,11 +295,29 @@ recover_pending() {
   [[ "${#pending[@]}" -eq 3 ]] || die 'invalid activation journal; manual recovery required'
   old_sha="${pending[0]}"
   new_sha="${pending[1]}"
-  valid_sha "$old_sha" && valid_sha "$new_sha" || die 'invalid activation journal SHA; manual recovery required'
+  { [[ "$old_sha" == 'none' ]] || valid_sha "$old_sha"; } && valid_sha "$new_sha" || die 'invalid activation journal SHA; manual recovery required'
   [[ "$old_sha" != "$new_sha" ]] || die 'activation journal must name distinct releases'
-  [[ -d "$RELEASES/$old_sha" && -d "$RELEASES/$new_sha" ]] || die 'activation journal release missing; manual recovery required'
-  log "recover interrupted activation; quarantine $new_sha and restore $old_sha"
+  [[ -d "$RELEASES/$new_sha" ]] || die 'activation journal candidate release missing; manual recovery required'
+  log "recover interrupted activation; quarantine $new_sha and restore ${old_sha}"
   mark_rejected "$new_sha" || die 'could not quarantine interrupted candidate'
+  if [[ "$old_sha" == "none" ]]; then
+    stop_adapters || die 'cannot stop services after failed initial activation; journal retained'
+    if [[ -L "$CURRENT_LINK" ]]; then
+      local active_target expected_target
+      active_target="$(current_target)" || die 'initial current symlink target is invalid; journal retained'
+      expected_target="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RELEASES/$new_sha")"
+      [[ "$active_target" == "$expected_target" ]] || die 'initial current symlink changed; journal retained'
+      rm -f -- "$CURRENT_LINK"
+    elif [[ -e "$CURRENT_LINK" ]]; then
+      die 'initial current path is not a symlink; journal retained'
+    fi
+    rm -rf -- "$RELEASES/$new_sha"
+    rm -f -- "$PENDING_FILE"
+    log "recovered failed bootstrap; no active release; stop this run"
+    exit 0
+  fi
+  [[ -d "$RELEASES/$old_sha" ]] || die 'activation journal previous release missing; manual recovery required'
+  log "restore previous release $old_sha"
   switch_current "$old_sha" || die 'cannot restore release symlink during recovery'
   restart_adapters || die 'service restart failed during recovery'
   wait_health "$old_sha" || die 'previous release health failed during recovery'
@@ -321,13 +349,24 @@ if is_rejected "$ready_sha"; then
   [[ "$retry_sha" == "$ready_sha" ]] || { log "SHA $ready_sha is quarantined; explicit --retry $ready_sha required"; exit 0; }
 fi
 
-old_release="$(current_target)" || die 'current symlink target is outside the release root'
-old_sha="$(basename "$old_release")"
-valid_sha "$old_sha" || die 'current release directory is not named by a SHA'
-[[ "$(cat "$old_release/.whatsapp-release-sha")" == "$old_sha" ]] || die 'current release marker mismatch'
-if [[ "$ready_sha" == "$old_sha" ]]; then
-  log "release $ready_sha is already active"
-  exit 0
+bootstrap=0
+old_sha='none'
+if [[ -L "$CURRENT_LINK" ]]; then
+  old_release="$(current_target)" || die 'current symlink target is outside the release root'
+  old_sha="$(basename "$old_release")"
+  valid_sha "$old_sha" || die 'current release directory is not named by a SHA'
+  [[ "$(cat "$old_release/.whatsapp-release-sha")" == "$old_sha" ]] || die 'current release marker mismatch'
+  if [[ "$ready_sha" == "$old_sha" ]]; then
+    log "release $ready_sha is already active"
+    exit 0
+  fi
+elif [[ -e "$CURRENT_LINK" ]]; then
+  die 'current path exists but is not a symlink'
+else
+  remaining="$(find "$RELEASES" -mindepth 1 -maxdepth 1 -print -quit)"
+  [[ -z "$remaining" ]] || die 'current symlink is missing while release history exists; manual recovery required'
+  bootstrap=1
+  log 'no verified current release; bootstrap the first tested commit'
 fi
 [[ -d "$CANDIDATE_ROOT/$ready_sha" ]] || { log "candidate $ready_sha has not been staged"; exit 0; }
 
@@ -339,11 +378,30 @@ main_after="$(remote_sha "$MAIN_REF")" || die 'cannot re-read main ref'
 
 write_pending "$old_sha" "$ready_sha" activating
 switch_current "$ready_sha" || die 'cannot atomically switch active release'
-if restart_adapters && wait_health "$ready_sha"; then
+allow_unconfigured=false
+if [[ "$bootstrap" -eq 1 ]]; then allow_unconfigured=allow-unconfigured; fi
+if restart_adapters && wait_health "$ready_sha" "$allow_unconfigured"; then
   rm -f -- "$REJECTED_DIR/$ready_sha"
   rm -f -- "$PENDING_FILE"
-  log "promoted tested release $ready_sha"
+  if [[ "$bootstrap" -eq 1 ]]; then
+    log "bootstrapped first tested release $ready_sha"
+  else
+    log "promoted tested release $ready_sha"
+  fi
   exit 0
+fi
+
+if [[ "$bootstrap" -eq 1 ]]; then
+  log "first release $ready_sha failed identity/configuration health; stop services and return to no active release"
+  mark_rejected "$ready_sha" || die 'could not persist rejected bootstrap SHA; journal retained'
+  stop_adapters || die 'bootstrap stop failed; journal retained'
+  active_target="$(current_target)" || die 'bootstrap current symlink is invalid; journal retained'
+  expected_target="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RELEASES/$ready_sha")"
+  [[ "$active_target" == "$expected_target" ]] || die 'bootstrap current symlink changed; journal retained'
+  rm -f -- "$CURRENT_LINK"
+  rm -rf -- "$RELEASES/$ready_sha"
+  rm -f -- "$PENDING_FILE"
+  die "initial candidate $ready_sha failed; no active release; SHA quarantined"
 fi
 
 log "release $ready_sha failed identity/configured health checks; rolling back to $old_sha"

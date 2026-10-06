@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
-import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { McpAdapter } from './mcp-server.js';
@@ -329,10 +329,19 @@ async function runHttpMain(): Promise<void> {
   process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainEntrypoint(import.meta.url, process.argv[1])) {
   void runHttpMain().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'Startup failed.';
     process.stderr.write(`WhatsApp MCP startup failed: ${message}\n`);
     process.exitCode = 1;
   });
+}
+
+function isMainEntrypoint(moduleUrl: string, argvPath: string | undefined): boolean {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === fileURLToPath(moduleUrl);
+  } catch {
+    return false;
+  }
 }
