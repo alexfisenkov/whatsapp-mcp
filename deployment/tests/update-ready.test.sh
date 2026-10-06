@@ -138,6 +138,9 @@ grep -q 'Network=slirp4netns:allow_host_loopback=false' "$ROOT/deployment/templa
 grep -Fq 'chmod 0750 "$candidate_tmp"' "$STAGE_SCRIPT" || fail 'stager candidate directory must be group-readable without setgid privilege'
 grep -Fq 'find "$temp_release" -type d -exec chmod 0750 {} +' "$PROMOTE_SCRIPT" || fail 'promoted directories must be group-readable without setgid privilege'
 if grep -Eq 'chmod 2[0-7]{3}' "$STAGE_SCRIPT" "$PROMOTE_SCRIPT"; then fail 'unprivileged updater attempts to set setgid directory bits'; fi
+meta_proxy="$ROOT/deployment/templates/meta-webhook.nginx.conf.in"
+grep -Fq 'location ~ "^/whatsapp-personal/media/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" {' "$meta_proxy" || fail 'personal media UUID regex must be quoted for nginx braces'
+grep -Fq 'location ~ "^/whatsapp-business/media/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" {' "$meta_proxy" || fail 'Business media UUID regex must be quoted for nginx braces'
 if WHATSAPP_STAGE_USER=not-the-running-user "$STAGE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'stage helper accepted an unexpected Unix identity'; fi
 if WHATSAPP_PROMOTE_USER=not-the-running-user "$PROMOTE_SCRIPT" --dry-run >/dev/null 2>&1; then fail 'promoter accepted an unexpected Unix identity'; fi
 
