@@ -53,10 +53,44 @@ deployment. `node:sqlite` в Node 22.23 помечен эксперимента�
 
 - `WHATSAPP_ACCOUNT_ID` — внутренний ID этого owner profile.
 - `WAHA_BASE_URL` — фиксированный private origin, на сервере WAHA `8859`.
-- `WAHA_API_KEY` — engine key, только в secret environment.
+- `WAHA_API_KEY` — приватный WAHA key, привязанный к этому
+  `WAHA_SESSION_NAME`, в private secret environment. Создание и ограничения
+  session-scoped key подтверждены для WAHA `2026.9.2` NOWEB/CORE image digest
+  `sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659`:
+  `isAdmin=false`, привязка к нужной session, `read/send=true`, остальные
+  actions выключены, запрос к своей session даёт 200, к другой — 403. Не считай
+  это гарантией для любой edition/build. Перед конфигурацией MCP проверь эти
+  свойства на фактическом runtime. Если не проходят, останови настройку и
+  выясни edition/build. Не подставляй вместо него глобальный WAHA admin key.
 - `WAHA_SESSION_NAME` — заранее подготовленная WAHA session.
 - `WAHA_ENABLE_GROUP_ADMIN=true` или `WAHA_ENABLE_STATUS_POSTING=true` включают
   дополнительные администраторские tools; по умолчанию они скрыты.
+
+Для каждой новой NOWEB session, в том числе для второго личного номера, включи
+store в `config` **до** первого QR pairing.
+Это поле Session API, не environment variable:
+
+```json
+{
+  "name": "your-own-session",
+  "start": false,
+  "config": {
+    "noweb": {
+      "store": {
+        "enabled": true,
+        "fullSync": false
+      }
+    }
+  }
+}
+```
+
+WAHA сообщает, что `fullSync=false` обычно даёт около трёх месяцев входящей
+истории, но это не полный архив и не гарантия на все аккаунты. NOWEB store
+выключен по умолчанию; без него чтение чатов/сообщений из WAHA недоступно.
+WAHA предупреждает, что изменение store flags после QR pairing может потерять
+историю. Для уже связанной session с выключенным store остановись и согласуй
+owner-controlled recovery; не меняй config вслепую и не удаляй старую session.
 
 Для Business Graph профиля задай `WHATSAPP_PHONE_NUMBER_ID`,
 `WHATSAPP_BUSINESS_ACCOUNT_ID` (WABA ID), `WHATSAPP_GRAPH_ACCESS_TOKEN` и при
@@ -140,8 +174,11 @@ eligibility и contract. Применяй `docs/Матрица-возможно�
 
 ## 5. HTTPS runtime и клиентская установка
 
-Приложение работает с `MCP_HOST=127.0.0.1`, `MCP_PORT=8857` personal или `8858`
-Business. `MCP_ALLOWED_HOSTS` содержит только proxy hostname;
+Приложение работает с `MCP_HOST=127.0.0.1`, `MCP_PORT=8857` для default
+personal, `8858` для Business и отдельным выбранным loopback port для каждого
+дополнительного personal instance (в owner deployment — `8864`,
+`personal-indonesia-owner`).
+`MCP_ALLOWED_HOSTS` содержит только proxy hostname;
 `MCP_ALLOWED_ORIGINS` — точные Origin values для DNS-rebinding проверки. HTTP
 transport server-to-server; CORS browser preflight не включён. Не bind к `0.0.0.0`.
 
@@ -262,7 +299,7 @@ architecture-specific tag/digest и сначала проверяй staged NOWEB
   secrets — в закрытой server env/secret store.
 - Audit хранит caller/account/revision/operation/digest/status, но не исходный
   текст сообщения. Session exports, message dumps и webhook raw body не логировать.
-- При утечке ключа сначала отзови конкретную WAHA session/API key, Graph token
+- При утечке ключа сначала отзови конкретный WAHA API key, Graph token
   или профильный MCP service token, останови только соответствующий instance,
   проверь audit и восстанови service через владельца; не копируй новый secret в
   GitHub или общий профиль.

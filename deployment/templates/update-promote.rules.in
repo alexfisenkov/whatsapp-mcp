@@ -2,7 +2,7 @@ polkit.addRule(function(action, subject) {
   if (action.id === "org.freedesktop.systemd1.manage-units" &&
       subject.user === "@PROMOTE_USER@" &&
       ["restart", "stop"].indexOf(action.lookup("verb")) !== -1 &&
-      ["mcp-whatsapp-personal.service", "mcp-whatsapp-business.service"].indexOf(action.lookup("unit")) !== -1) {
+      ["mcp-whatsapp-personal.service", "mcp-whatsapp-personal-indonesia.service", "mcp-whatsapp-business.service"].indexOf(action.lookup("unit")) !== -1) {
     return polkit.Result.YES;
   }
 });

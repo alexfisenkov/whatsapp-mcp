@@ -339,3 +339,76 @@ test('configured HTTP and stdio entrypoints launch through a current release sym
     rmSync(aliasRoot, { recursive: true, force: true });
   }
 });
+
+test('two personal runtime instances bind separate callers, accounts, tokens, and private state', async () => {
+  const profiles = [
+    {
+      suffix: 'primary',
+      profileId: 'personal-primary-test',
+      callerId: 'personal-primary-caller',
+      accountId: 'synthetic-account-one',
+      sessionName: 'synthetic-session-one',
+      token: 'dummy-primary-service-token-'.padEnd(48, 'x'),
+    },
+    {
+      suffix: 'secondary',
+      profileId: 'personal-secondary-test',
+      callerId: 'personal-secondary-caller',
+      accountId: 'synthetic-account-two',
+      sessionName: 'synthetic-session-two',
+      token: 'dummy-secondary-service-token-'.padEnd(48, 'y'),
+    },
+  ].map((profile) => {
+    const stateDirectory = mkdtempSync(join(tmpdir(), `wa-personal-${profile.suffix}-state-`));
+    chmodSync(stateDirectory, 0o700);
+    return { ...profile, stateDirectory };
+  });
+  const runtimes = [];
+  try {
+    for (const profile of profiles) {
+      const key = profile.token;
+      runtimes.push(await createServiceRuntime({
+        NODE_ENV: 'test',
+        WHATSAPP_ADAPTER: 'linked-device',
+        WHATSAPP_ACCOUNT_ID: profile.accountId,
+        WHATSAPP_PROFILE_ID: profile.profileId,
+        WHATSAPP_CALLER_ID: profile.callerId,
+        WHATSAPP_STATE_DIR: profile.stateDirectory,
+        WHATSAPP_RELEASE_REVISION: 'f'.repeat(40),
+        MCP_SERVICE_TOKEN: key,
+        WAHA_BASE_URL: 'http://127.0.0.1:8859',
+        WAHA_API_KEY: 'dummy-waha-api-key',
+        WAHA_SESSION_NAME: profile.sessionName,
+      }, 'http'));
+    }
+
+    const [primary, secondary] = runtimes;
+    assert.equal(primary.configured, true);
+    assert.equal(secondary.configured, true);
+    assert.equal((await primary.status()).profileId, profiles[0].profileId);
+    assert.equal((await secondary.status()).profileId, profiles[1].profileId);
+    assert.equal(primary.caller.accountId, profiles[0].accountId);
+    assert.equal(secondary.caller.accountId, profiles[1].accountId);
+    assert.notEqual(primary.caller.callerId, secondary.caller.callerId);
+    await primary.adapter.authorize(primary.caller);
+    await secondary.adapter.authorize(secondary.caller);
+    await assert.rejects(() => primary.adapter.authorize(secondary.caller));
+    await assert.rejects(() => secondary.adapter.authorize(primary.caller));
+    const primaryMedia = await primary.mediaStore.save({
+      bytes: Buffer.from('profile one only'), mimeType: 'text/plain', fileName: 'fixture.txt',
+    });
+    assert.equal((await primary.mediaStore.read(primaryMedia.id, { maxBytes: 100, allowedMimeTypes: ['text/plain'] })).bytes.toString(), 'profile one only');
+    await assert.rejects(() => secondary.mediaStore.read(primaryMedia.id, { maxBytes: 100, allowedMimeTypes: ['text/plain'] }));
+
+    const primaryResolve = primary.httpConfig().resolveCaller;
+    const secondaryResolve = secondary.httpConfig().resolveCaller;
+    assert.ok(primaryResolve && secondaryResolve);
+    assert.equal((await primaryResolve({ headers: { authorization: `Bearer ${profiles[0].token}` } })).accountId, profiles[0].accountId);
+    assert.equal((await secondaryResolve({ headers: { authorization: `Bearer ${profiles[1].token}` } })).accountId, profiles[1].accountId);
+    assert.equal(await primaryResolve({ headers: { authorization: `Bearer ${profiles[1].token}` } }), null);
+    assert.equal(await secondaryResolve({ headers: { authorization: `Bearer ${profiles[0].token}` } }), null);
+  } finally {
+    for (const runtime of runtimes) runtime.close();
+    for (const profile of profiles) rmSync(profile.stateDirectory, { recursive: true, force: true });
+  }
+});

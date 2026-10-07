@@ -79,7 +79,7 @@ page](https://nodejs.org/en/blog/release/v22.23.2/) и сверяй SHA256 до 
         "WHATSAPP_ADAPTER": "linked-device",
         "WHATSAPP_ACCOUNT_ID": "your-own-profile-id",
         "WAHA_BASE_URL": "http://127.0.0.1:8859",
-        "WAHA_API_KEY": "<private WAHA API key>",
+        "WAHA_API_KEY": "<private WAHA key scoped to this session>",
         "WAHA_SESSION_NAME": "your-own-session",
         "WHATSAPP_HISTORY_DB_PATH": "/absolute/private/personal/history.sqlite",
         "WHATSAPP_AUDIT_DB_PATH": "/absolute/private/personal/audit.sqlite",
@@ -97,6 +97,26 @@ For a Business profile use a separate process and private paths, with
 `WHATSAPP_GRAPH_API_VERSION=v24.0`. The Graph API version is configurable; the
 default is pinned to the tested v24.0 contract. Keep the App Secret and webhook
 verification token in server configuration, not in a public client file.
+
+You may run more than one personal profile, but each process stays bound to one
+WAHA session and account. Give every profile its own `WHATSAPP_PROFILE_ID`,
+`WHATSAPP_CALLER_ID`, session-scoped WAHA API key, `WAHA_SESSION_NAME`, HTTP
+`MCP_SERVICE_TOKEN`, and private audit/history/media paths. Use a different MCP
+host identity and env block for each process; tools never accept an account
+selector. Session-scoped key creation and enforcement were verified against
+WAHA `2026.9.2` NOWEB/CORE image digest
+`sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659`.
+The verified key had `isAdmin=false`, was bound to the named session, enabled
+`read` and `send` only, returned 200 for that session, and 403 for another.
+WAHA editions/builds can differ: verify the actual runtime's key-creation
+response, session/actions fields, a request to the bound session (expected 200),
+and a request to a different session (expected 403) before configuring an MCP
+process. Never substitute a global administrator key if this check fails;
+resolve the edition/runtime first.
+
+The hosted profiles used by the owner are private, not a shared student tenant
+service. Students install and operate their own WAHA/MCP stack; do not configure
+a student client to use the owner's hosted profiles.
 
 This MCP does not create or display a QR pairing flow. Create and link a WAHA
 session through the private WAHA provisioning surface for that profile, then
@@ -120,6 +140,31 @@ the newest QR for each update instead of reusing an old image. WAHA documents a
 60-second lifetime for the first QR, 20 seconds for later QR codes, and at most
 six QR codes before the session enters `FAILED`.
 
+Before starting a new NOWEB session and scanning its first QR, enable the local
+store in that session's creation config (this is not an environment variable):
+
+```json
+{
+  "name": "your-own-session",
+  "start": false,
+  "config": {
+    "noweb": {
+      "store": {
+        "enabled": true,
+        "fullSync": false
+      }
+    }
+  }
+}
+```
+
+With `fullSync=false`, WAHA describes roughly three months of initial history;
+it is not a complete archive. The MCP's local index remains partial and is
+populated through explicit bounded sync. WAHA warns that changing store settings
+after QR pairing can lose history. If an existing session was paired with the
+store disabled, do not change it blindly or delete it; make an owner-controlled
+recovery plan before any re-pairing.
+
 If WhatsApp reports `Can't link device`, stop scanning that code. Confirm that
 the primary phone is using WhatsApp's **Link a device** screen, then wait for
 WAHA's next `SCAN_QR_CODE` update and scan its fresh QR once. If the session has
@@ -129,7 +174,7 @@ repeatedly retry a stale QR, unlink/log out the account, delete the session
 directory, or reset its store as a first response. If the fresh attempt still
 fails, stop and review redacted WAHA/phone diagnostics before trying again.
 
-The current core snapshot passed `npm test` 79/79 on Node 22.23.2. Separately,
+The current core snapshot passed `npm test` 81/81 on Node 22.23.2. Separately,
 one owner-operated pairing on 2026-10-07 reached WAHA `WORKING` with the pinned
 NOWEB image and `auto-web`. This verifies one environment; it does not show that
 the setting alone caused success or guarantee pairing on every phone or account.
@@ -139,8 +184,9 @@ and [WhatsApp's linked-device instructions](https://faq.whatsapp.com/13175649623
 ## Hosted Streamable HTTP
 
 Run `npm run start:http` behind HTTPS with `MCP_HOST=127.0.0.1`. `MCP_PORT` is
-8857 for personal and 8858 for Business on the owner deployment. The application
-does not bind to a public interface. Set `MCP_ALLOWED_HOSTS` to the exact proxy
+8857 for the default personal profile and 8858 for Business; the owner may assign
+a separate loopback port (8864 on the documented secondary profile) to another
+personal account. The application does not bind to a public interface. Set `MCP_ALLOWED_HOSTS` to the exact proxy
 hostnames and `MCP_ALLOWED_ORIGINS` to exact Origin values for the DNS-rebinding
 check. This endpoint is server-to-server MCP; it does not enable browser
 JavaScript CORS or answer preflight OPTIONS requests.

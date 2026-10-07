@@ -37,6 +37,29 @@ test('WAHA binds caller before the first HTTP request', async () => {
   assert.equal(calls, 0);
 });
 
+test('WAHA rejects caller-supplied session overrides before any provider request', async () => {
+  let calls = 0;
+  const adapter = createWahaPersonalAdapter(config({
+    fetchImpl: async () => { calls += 1; return jsonResponse({}); },
+  }));
+  const forgedSession = 'other-profile-session';
+  const cases = [
+    ['personal.messages.list', { chatId: '111@c.us', limit: 10, offset: 0, session: forgedSession }],
+    ['personal.contacts.list', { limit: 10, offset: 0, session: forgedSession }],
+    ['personal.contacts.get', { contactId: '111@c.us', session: forgedSession }],
+    ['personal.messages.send_text', { chatId: '111@c.us', text: 'hello', session: forgedSession }],
+  ];
+
+  for (const [operationId, input] of cases) {
+    await assert.rejects(
+      () => adapter.execute(operationId, input, caller),
+      /invalid tool arguments/i,
+      `${operationId} must reject a forged session field`,
+    );
+  }
+  assert.equal(calls, 0);
+});
+
 test('WAHA chat page uses a fixed session route and strips engine internals and media URLs', async () => {
   const calls = [];
   const adapter = createWahaPersonalAdapter(config({

@@ -64,7 +64,13 @@ NPM_STUB
 cat >"$WORK/bin/systemctl" <<'SYSTEMCTL_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$TEST_SYSTEMCTL_LOG"
+case "${1:-}" in
+  is-enabled|is-active)
+    [[ "${@: -1}" == 'mcp-whatsapp-personal-indonesia.service' && "${TEST_SECONDARY_SERVICE_ACTIVE:-0}" == 1 ]]
+    ;;
+  restart|stop) printf '%s\n' "$*" >>"$TEST_SYSTEMCTL_LOG" ;;
+  *) exit 96 ;;
+esac
 SYSTEMCTL_STUB
 cat >"$WORK/bin/sleep" <<'SLEEP_STUB'
 #!/usr/bin/env bash
@@ -77,7 +83,14 @@ url="${@: -1}"
 active="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]).split("/")[-1])' "$WHATSAPP_RELEASE_ROOT/current")"
 adapter=linked-device
 profile=personal-owner
-[[ "$url" != *:8858/health ]] || { adapter=business-graph; profile=business-owner; }
+is_secondary=0
+if [[ -n "${WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY:-}" && "$url" == "$WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY" ]]; then
+  profile="${WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY:?}"
+  is_secondary=1
+elif [[ "$url" == *:8858/health ]]; then
+  adapter=business-graph
+  profile=business-owner
+fi
 revision="$active"
 configured=true
 status=configured
@@ -93,6 +106,8 @@ if [[ "$active" == "${TEST_HEALTH_FAIL_SHA:-}" ]]; then
     profile) profile=wrong-profile ;;
     adapter) adapter=wrong-adapter ;;
     configured) configured=true; status=not_configured ;;
+    secondary_profile) [[ "$is_secondary" != 1 ]] || profile=wrong-profile ;;
+    secondary_revision) [[ "$is_secondary" != 1 ]] || revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
   esac
 fi
 printf '{"adapter":"%s","profileId":"%s","releaseRevision":"%s","configured":%s,"status":"%s"}\n' \
@@ -110,6 +125,7 @@ export WHATSAPP_RELEASE_GROUP="$(id -gn)"
 export WHATSAPP_PROMOTE_STATE_ROOT="$WORK/promote-state"
 export WHATSAPP_HEALTH_URL_PERSONAL='http://127.0.0.1:8857/health'
 export WHATSAPP_HEALTH_URL_BUSINESS='http://127.0.0.1:8858/health'
+export TEST_SECONDARY_SERVICE_ACTIVE=0
 export TEST_FIXTURE="$WORK/fixture"
 export TEST_NPM_LOG="$WORK/npm.log"
 export TEST_SYSTEMCTL_LOG="$WORK/systemctl.log"
@@ -126,14 +142,27 @@ grep -q 'User=@STAGE_USER@' "$stage_unit" || fail 'stage unit has no dedicated u
 grep -q 'ProtectHome=yes' "$stage_unit" || fail 'stage unit Home protection changed unexpectedly'
 grep -q 'Environment=npm_config_cache=@STAGE_ROOT@/npm-cache' "$stage_unit" || fail 'npm cache is not redirected into allowed staging storage'
 grep -q 'ReadWritePaths=@STAGE_ROOT@ @CANDIDATE_ROOT@' "$stage_unit" || fail 'stage write set is not narrow'
-grep -q 'InaccessiblePaths=-@RELEASE_ROOT@ -@PROMOTE_STATE_ROOT@ -@PERSONAL_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@' "$stage_unit" || fail 'stage unit can see protected release/promoter/app paths'
+grep -q 'InaccessiblePaths=-@RELEASE_ROOT@ -@PROMOTE_STATE_ROOT@ -@PERSONAL_STATE_ROOT@ -@PERSONAL_SECONDARY_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@' "$stage_unit" || fail 'stage unit can see protected release/promoter/app paths'
 ! grep -q 'polkit\|systemctl\|MCP_SERVICE_TOKEN' "$stage_unit" || fail 'stager has service control or credential access'
 grep -q 'ReadOnlyPaths=@CANDIDATE_ROOT@' "$promote_unit" || fail 'promoter candidate input is not read-only'
 grep -q 'ReadWritePaths=@RELEASE_ROOT@ @PROMOTE_STATE_ROOT@' "$promote_unit" || fail 'promoter write set is incomplete or too broad'
-grep -q 'InaccessiblePaths=-@STAGE_ROOT@ -@PERSONAL_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@' "$promote_unit" || fail 'promoter can access stage-private or app data'
+grep -q 'InaccessiblePaths=-@STAGE_ROOT@ -@PERSONAL_STATE_ROOT@ -@PERSONAL_SECONDARY_STATE_ROOT@ -@BUSINESS_STATE_ROOT@ -@CREDENTIAL_ROOT@' "$promote_unit" || fail 'promoter can access stage-private or app data'
+grep -Fq '@PERSONAL_SECONDARY_STATE_ROOT@' "$stage_unit" || fail 'stager can access the optional personal state directory'
+grep -Fq '@PERSONAL_SECONDARY_STATE_ROOT@' "$promote_unit" || fail 'promoter can access the optional personal state directory'
 grep -q 'subject.user === "@PROMOTE_USER@"' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit identity is not restricted'
 grep -Fq '["restart", "stop"].indexOf(action.lookup("verb")) !== -1' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit verbs are not restricted to restart/stop'
-grep -Fq '["mcp-whatsapp-personal.service", "mcp-whatsapp-business.service"].indexOf(action.lookup("unit")) !== -1' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit units are not restricted to the two app services'
+grep -Fq '["mcp-whatsapp-personal.service", "mcp-whatsapp-personal-indonesia.service", "mcp-whatsapp-business.service"].indexOf(action.lookup("unit")) !== -1' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit units are not restricted to the three approved app services'
+grep -Fq 'Environment=WHATSAPP_PROFILE_ID=@PERSONAL_SECONDARY_PROFILE_ID@' "$ROOT/deployment/templates/mcp-personal-secondary.service.in" || fail 'secondary personal unit does not use an explicit profile identity'
+grep -Fq 'Environment=MCP_PORT=@PERSONAL_SECONDARY_MCP_LOOPBACK_PORT@' "$ROOT/deployment/templates/mcp-personal-secondary.service.in" || fail 'secondary personal unit does not bind its own loopback port'
+grep -Fq 'Environment=WHATSAPP_STATE_DIR=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@' "$ROOT/deployment/templates/mcp-personal-secondary.service.in" || fail 'secondary personal unit does not use a separate state directory'
+grep -Fq 'EnvironmentFile=@PERSONAL_SECONDARY_PRIVATE_ENV_FILE@' "$ROOT/deployment/templates/mcp-personal-secondary.service.in" || fail 'secondary personal unit does not use its own private env file'
+grep -Fq 'location = /@PERSONAL_SECONDARY_PUBLIC_SLUG@/media {' "$ROOT/deployment/templates/meta-webhook.nginx.conf.in" || fail 'secondary personal media ingress must use its own exact public route'
+grep -Fq 'location ~ "^/@PERSONAL_SECONDARY_PUBLIC_SLUG@/media/' "$ROOT/deployment/templates/meta-webhook.nginx.conf.in" || fail 'secondary personal media retrieval route is missing'
+grep -Fq 'PERSONAL_SECONDARY_UNIT=' "$PROMOTE_SCRIPT" || fail 'promoter does not pin the optional personal systemd unit'
+grep -Fq 'WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY' "$PROMOTE_SCRIPT" || fail 'promoter does not bind the optional personal profile identity'
+grep -Fq 'WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY' "$PROMOTE_SCRIPT" || fail 'promoter does not health-check the optional personal profile'
+grep -Fq '"enabled": true' "$ROOT/README.md" || fail 'student setup does not enable the NOWEB store before pairing'
+grep -Fq '"fullSync": false' "$ROOT/README.md" || fail 'student setup does not keep full history sync disabled by default'
 grep -q 'Network=slirp4netns:allow_host_loopback=false' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA rootless network does not explicitly deny host-loopback access'
 grep -Fq 'Environment=WAHA_NOWEB_WA_VERSION=auto-web' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA NOWEB does not fetch the current WhatsApp Web version on startup'
 if grep -Eq '^Environment=WAHA_NOWEB_WA_VERSION_FORCE=True$' "$ROOT/deployment/templates/waha.container.in"; then fail 'WAHA NOWEB unexpectedly forces a pinned WhatsApp Web version'; fi
@@ -327,3 +356,106 @@ export TEST_HEALTH_FAIL_SHA=''
 [[ ! -e "$WORK/bootstrap-fail-state/rejected/$BOOTSTRAP_FAIL_SHA" ]] || fail 'healthy bootstrap retry left quarantine'
 
 printf 'PASS: no-current bootstrap, truthful not_configured health, bootstrap rollback-to-empty, same-SHA skip and explicit bootstrap retry\n'
+
+# The optional secondary personal profile is discovered only from the fixed
+# root-owned updater environment and its exact installed unit. Default installs
+# without that unit continue to use the original two-profile readiness gate.
+SECONDARY_BASE_SHA='9191919191919191919191919191919191919191'
+SECONDARY_UPDATE_SHA='abababababababababababababababababababab'
+SECONDARY_FAILED_SHA='acacacacacacacacacacacacacacacacacacacac'
+SECONDARY_BAD_REVISION_SHA='adadadadadadadadadadadadadadadadadadadad'
+SECONDARY_LEGACY_INTERRUPTED_SHA='bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc'
+mkdir -p "$WORK/secondary/releases" "$WORK/secondary-state"
+make_candidate "$SECONDARY_BASE_SHA"
+export WHATSAPP_RELEASE_ROOT="$WORK/secondary" WHATSAPP_PROMOTE_STATE_ROOT="$WORK/secondary-state"
+export TEST_READY_SHA="$SECONDARY_BASE_SHA" TEST_MAIN_SHA="$SECONDARY_BASE_SHA"
+export TEST_SECONDARY_SERVICE_ACTIVE=0
+unset WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_BASE_SHA" ]] || fail 'default two-profile bootstrap required an optional personal service'
+
+# A discovered service without both root-owned identity/health values must fail
+# closed before it can be silently omitted from release readiness or rollback.
+TEST_SECONDARY_SERVICE_ACTIVE=1
+make_candidate "$SECONDARY_UPDATE_SHA"
+export TEST_READY_SHA="$SECONDARY_UPDATE_SHA" TEST_MAIN_SHA="$SECONDARY_UPDATE_SHA"
+n_before_missing_secondary_config="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/secondary-missing-config.log" 2>&1; then fail 'enabled secondary profile was promoted without its health identity'; fi
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_BASE_SHA" ]] || fail 'missing secondary profile config changed the release'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$n_before_missing_secondary_config" ]] || fail 'missing secondary profile config restarted services'
+
+export WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY='personal-indonesia-owner'
+unset WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY
+n_before_partial_secondary_config="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/secondary-partial-config.log" 2>&1; then fail 'partial secondary profile mapping was accepted'; fi
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_BASE_SHA" ]] || fail 'partial secondary profile mapping changed the release'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$n_before_partial_secondary_config" ]] || fail 'partial secondary profile mapping restarted services'
+
+export WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY='personal-owner'
+export WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY='http://127.0.0.1:8864/health'
+if "$PROMOTE_SCRIPT" >"$WORK/secondary-duplicate-profile.log" 2>&1; then fail 'secondary profile reused the default profile ID'; fi
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_BASE_SHA" ]] || fail 'duplicate profile ID changed the release'
+
+export WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY='personal-indonesia-owner'
+export WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY='http://127.0.0.1:8864/health'
+export TEST_READY_SHA="$SECONDARY_BASE_SHA" TEST_MAIN_SHA="$SECONDARY_BASE_SHA"
+
+# A same-SHA timer tick must still validate the enabled extra profile, then skip
+# without restarting anything once all profile identities match the current SHA.
+n_before_same_secondary_sha="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+output="$("$PROMOTE_SCRIPT" 2>&1)" || fail "secondary same-SHA health check failed: $output"
+[[ "$output" == *'already active'* ]] || fail 'same-SHA secondary profile was not recognized as already active'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$n_before_same_secondary_sha" ]] || fail 'same-SHA secondary check restarted services'
+
+# A new release restarts all three isolated app services and gates on the new
+# personal identity. A secondary mismatch rolls back the shared release for all.
+export TEST_READY_SHA="$SECONDARY_UPDATE_SHA" TEST_MAIN_SHA="$SECONDARY_UPDATE_SHA"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_UPDATE_SHA" ]] || fail 'secondary-profile release did not promote'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_same_secondary_sha + 3))" ]] || fail 'secondary-profile promotion did not restart exactly three services'
+
+make_candidate "$SECONDARY_FAILED_SHA"
+export TEST_READY_SHA="$SECONDARY_FAILED_SHA" TEST_MAIN_SHA="$SECONDARY_FAILED_SHA"
+export TEST_HEALTH_FAIL_SHA="$SECONDARY_FAILED_SHA" TEST_HEALTH_FAILURE_KIND=secondary_profile
+n_before_secondary_rollback="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/secondary-rollback.log" 2>&1; then fail 'wrong secondary profile identity was accepted'; fi
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_UPDATE_SHA" ]] || fail 'secondary profile mismatch did not restore the shared release'
+[[ -f "$WORK/secondary-state/rejected/$SECONDARY_FAILED_SHA" ]] || fail 'secondary profile mismatch was not quarantined'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_secondary_rollback + 6))" ]] || fail 'secondary profile rollback did not restart all three services on both candidate and restore'
+
+make_candidate "$SECONDARY_BAD_REVISION_SHA"
+export TEST_READY_SHA="$SECONDARY_BAD_REVISION_SHA" TEST_MAIN_SHA="$SECONDARY_BAD_REVISION_SHA"
+export TEST_HEALTH_FAIL_SHA="$SECONDARY_BAD_REVISION_SHA" TEST_HEALTH_FAILURE_KIND=secondary_revision
+n_before_secondary_revision_rollback="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+if "$PROMOTE_SCRIPT" >"$WORK/secondary-revision-rollback.log" 2>&1; then fail 'wrong secondary release revision was accepted'; fi
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_UPDATE_SHA" ]] || fail 'secondary release SHA mismatch did not restore the shared release'
+[[ -f "$WORK/secondary-state/rejected/$SECONDARY_BAD_REVISION_SHA" ]] || fail 'secondary release SHA mismatch was not quarantined'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_secondary_revision_rollback + 6))" ]] || fail 'secondary SHA rollback did not restart all three services on both candidate and restore'
+
+# Old two-profile five-line journals remain recoverable after the optional third
+# profile is configured. With no recorded old baseline, require identity/revision
+# and accept either truthful configured status for the new profile.
+mkdir -p "$WORK/secondary/releases/$SECONDARY_LEGACY_INTERRUPTED_SHA/dist"
+printf '%s\n' "$SECONDARY_LEGACY_INTERRUPTED_SHA" >"$WORK/secondary/releases/$SECONDARY_LEGACY_INTERRUPTED_SHA/.whatsapp-release-sha"
+printf 'fixture server\n' >"$WORK/secondary/releases/$SECONDARY_LEGACY_INTERRUPTED_SHA/dist/http-server.js"
+ln -sfn "$WORK/secondary/releases/$SECONDARY_LEGACY_INTERRUPTED_SHA" "$WORK/secondary/current"
+printf '%s\n%s\nactivating\nconfigured\nconfigured\n' \
+  "$SECONDARY_UPDATE_SHA" "$SECONDARY_LEGACY_INTERRUPTED_SHA" >"$WORK/secondary-state/activation.pending"
+n_before_legacy_secondary_recovery="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_UPDATE_SHA" ]] || fail 'legacy two-profile journal did not restore the prior release with the optional profile active'
+[[ ! -e "$WORK/secondary-state/activation.pending" ]] || fail 'legacy journal was not cleared after recovery'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_legacy_secondary_recovery + 3))" ]] || fail 'legacy journal recovery did not restart all three services'
+
+# New six-line activation journals retain the third profile's truthful prior
+# state and recover all three services without guessing.
+ln -sfn "$WORK/secondary/releases/$SECONDARY_LEGACY_INTERRUPTED_SHA" "$WORK/secondary/current"
+printf '%s\n%s\nactivating\nconfigured\nconfigured\nconfigured\n' \
+  "$SECONDARY_UPDATE_SHA" "$SECONDARY_LEGACY_INTERRUPTED_SHA" >"$WORK/secondary-state/activation.pending"
+n_before_new_secondary_recovery="$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')"
+"$PROMOTE_SCRIPT"
+[[ "$(current_sha_at "$WORK/secondary")" == "$SECONDARY_UPDATE_SHA" ]] || fail 'six-line profile journal did not restore the prior release'
+[[ ! -e "$WORK/secondary-state/activation.pending" ]] || fail 'six-line profile journal was not cleared after recovery'
+[[ "$(wc -l <"$TEST_SYSTEMCTL_LOG" | tr -d ' ')" == "$((n_before_new_secondary_recovery + 3))" ]] || fail 'six-line journal recovery did not restart all three services'
+
+printf 'PASS: optional secondary personal profile remains absent-by-default, validates profile config on same-SHA skips, gates promotion/rollback for all three instances, and recovers legacy and current activation journals\n'

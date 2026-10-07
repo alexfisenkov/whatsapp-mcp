@@ -8,10 +8,11 @@ configuration here.
 ## Runtime boundary
 
 The linked-device and Business Graph adapters run as separate native Node
-services. They use `dist/http-server.js` for loopback-only Streamable HTTP and
-webhook routes. The local client entry point remains `dist/server.js` over
-stdio. Both services use Node `>=22 <23`; the installable service artifact is
-built from the exact tested Git commit.
+services. An owner can run multiple linked-device services; each remains bound
+to one account and one WAHA named session. They use `dist/http-server.js` for
+loopback-only Streamable HTTP and webhook routes. The local client entry point
+remains `dist/server.js` over stdio. All services use Node `>=22 <23`; the
+installable service artifact is built from the exact tested Git commit.
 
 The native HTTP services receive `MCP_HOST=127.0.0.1`, a profile-specific
 `MCP_PORT`, and explicit private `WHATSAPP_STATE_DIR`,
@@ -20,8 +21,10 @@ must stay under the matching profile state directory and use mode `0600`.
 `WHATSAPP_MEDIA_DIR` is a separate mode `0700` directory per profile; stored
 files use mode `0600` and stay outside application releases.
 
-The linked-device provider is a separate rootless Podman Quadlet instance. The
+The linked-device provider runs in one rootless Podman Quadlet instance. The
 example pins WAHA Core NOWEB to version `2026.9.2` and its amd64 image digest.
+An optional second personal MCP uses another named session in this same WAHA
+instance; it does not install or expose a second WAHA container.
 The Quadlet also sets `WAHA_NOWEB_WA_VERSION=auto-web`. WAHA `2026.8.1` and newer
 fetch the current WhatsApp Web revision at container startup, compare it with
 the revision bundled in WAHA, and use the higher one. If the fetch is unavailable,
@@ -32,6 +35,9 @@ OCI-compatible, daemonless runtime choice that still requires a staging smoke
 test with this exact image before production use.
 
 References: [WAHA NOWEB images](https://waha.devlike.pro/docs/how-to/engines/),
+[WAHA sessions](https://waha.devlike.pro/docs/how-to/sessions/),
+[WAHA session-scoped API keys](https://waha.devlike.pro/docs/how-to/security/#keys-api),
+[WAHA multi-session support](https://waha.devlike.pro/docs/how-to/sessions/#multiple-sessions),
 [WAHA install and update](https://waha.devlike.pro/docs/how-to/install/),
 [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html),
 and the [pinned amd64 image manifest](https://hub.docker.com/layers/devlikeapro/waha/noweb-2026.9.2/images/sha256-0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659).
@@ -55,6 +61,7 @@ Use the existing HTTPS MCP gateway for authenticated MCP traffic:
 
 - `https://<gateway-host>/whatsapp-personal/mcp`
 - `https://<gateway-host>/whatsapp-business/mcp`
+- Optional second personal profile: `https://<gateway-host>/<personal-secondary-slug>/mcp`
 
 The hosted owner service is not a shared endpoint for learners. Learners install
 their own package/runtime and connect their own accounts; the public repository
@@ -90,6 +97,100 @@ façade must explicitly add each profile, UID, state directory, signing key, and
 upstream URL before those paths can be used. A generic gateway Bearer route does
 not prove OAuth owner checks or account isolation.
 
+If the optional second personal profile is installed, render its separate
+`POST /<personal-secondary-slug>/media` and UUID-scoped
+`GET /<personal-secondary-slug>/media/<uuid>` routes from the secondary Nginx
+placeholders. Bind the slug to the same private gateway profile used by its
+`/mcp` endpoint; never reuse the default personal `mcp_name` or upstream Bearer.
+
+## Optional additional personal profile
+
+The default deployment remains the personal profile and Business Graph profile.
+For a second personal account, render
+`deployment/templates/mcp-personal-secondary.service.in` as the fixed unit
+`mcp-whatsapp-personal-indonesia.service`. This template creates a separate MCP
+process, `WHATSAPP_PROFILE_ID`, `WHATSAPP_CALLER_ID`, token, loopback port,
+history/audit databases, and media directory. In the owner setup, use profile ID
+`personal-indonesia-owner`, loopback port `8864`, and gateway slug
+`whatsapp-personal-indonesia`. These are internal profile labels, not phone
+numbers. Other installations can render their own profile identity, service
+name, port, state root, and route slug; the optional promoter slot in this
+release is intentionally pinned to the single additional unit agreed for this
+host.
+
+Create one uniquely named WAHA session for the profile in the existing WAHA
+instance, with NOWEB message storage enabled **before the first QR scan** and
+`fullSync=false`. For example, prepare this session payload in the private WAHA
+provisioning surface, replacing the name with the profile's unique session name:
+
+```json
+{
+  "name": "personal-indonesia",
+  "start": false,
+  "config": {
+    "noweb": {
+      "store": {
+        "enabled": true,
+        "fullSync": false
+      }
+    }
+  }
+}
+```
+
+Starting from `STOPPED` after creation allows the operator to issue and verify a
+session-scoped key before starting/pairing. WAHA `2026.9.2` NOWEB/CORE image digest
+`sha256:0999fb384426222be591f3ffd15879f39b8940662df2f9f1d70d836a8315f659`
+passed live create, self-session `200`, and cross-session `403` checks. The
+verified key had `isAdmin=false`, the named session, `read/send=true`, and all
+other actions disabled. Editions and builds can differ, so probe the actual
+runtime before provisioning: require a successful create response, exact
+session/action fields, then verify self-session `200` and cross-session `403`. If
+any check fails, stop provisioning; never fall back to the global administrator
+key in an MCP process.
+Keep the account ID, session name, `MCP_SERVICE_TOKEN`, private env file, state
+root, SQLite databases, and media directory distinct from the primary personal
+profile. `WHATSAPP_ADAPTER` remains `linked-device`; the extra profile is not a
+Business Graph account or a new tool registry.
+
+Add the private gateway profile entry and exact media locations before exposing
+its HTTPS URL. For the owner-named profile, the gateway slug is
+`whatsapp-personal-indonesia`; use its own user-to-profile mapping and upstream
+Bearer. Test that the default personal token is rejected on the second profile
+and vice versa. The gateway catalog and credentials are outside this repository.
+
+The secondary unit uses `@PERSONAL_SECONDARY_STATE_ROOT@` outside the release
+tree, a distinct `WHATSAPP_CALLER_ID`, and a separate private env file. That file
+holds this session's internal account ID, `WAHA_SESSION_NAME`, its verified
+session-scoped `WAHA_API_KEY`, and upstream `MCP_SERVICE_TOKEN`. Generate the
+WAHA key from the private Keys API/Dashboard after the session exists, then run
+the self/cross-session permission checks described above. Never copy the global
+admin key into the MCP environment. The WAHA session is named
+`personal-indonesia` for this owner setup; `store.enabled=true` and
+`fullSync=false` must be set in its session creation config before the first QR.
+Keep store settings and the session volume unchanged after pairing.
+
+Promotion remains compatible with the default two-profile install. To opt in,
+the root-owned updater environment must set both
+`WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY` and
+`WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY`; the latter must be a loopback `/health`
+URL. Do not put service/API keys there. The promoter accepts only the fixed
+secondary systemd unit, checks its adapter/profile/release SHA, and restarts all
+three MCP services together. Partial mapping fails closed. If the secondary unit
+is active or enabled without its health mapping, promotion fails closed rather
+than silently skipping it. No mapping plus no active/ enabled secondary unit
+retains the existing two-profile behavior. Legacy five-line activation journals
+remain readable; new journals also preserve the optional profile's health
+baseline.
+
+For onboarding, pause the updater timer, render and start the new unit on the
+current tested release, verify its `/health`, MCP handshake, `tools/list`, and
+cross-profile authorization rejection, then add its optional identity/health
+mapping and resume the timer. The shared `current` release symlink means each
+later CI-approved commit updates every enabled MCP profile in one promotion.
+Do not enable this profile until the host owner has approved memory headroom for
+the additional service.
+
 ## Rootless Podman setup
 
 The host needs cgroup v2, a dedicated non-login user, subordinate UID/GID
@@ -108,8 +209,12 @@ Inject the WAHA API key from a private owner-only environment file. Set
 `WAHA_PRINT_QR=False`; QR output must not reach the journal. Keep personal and
 Business API credentials in separate files readable only by their respective
 service identities. The template values in this repository are not production
-credentials. The personal MCP receives its own WAHA API key copy; it does not
-read the WAHA session directory.
+credentials. Use a WAHA admin key only in its protected operator configuration.
+Each MCP service receives a verified WAHA session-scoped API key limited to its
+named session; this is confirmed for the exact pinned NOWEB image above, not a
+universal guarantee for every WAHA Core build. If a self-hosted install
+cannot create and verify that scope, do not run this MCP with the global key.
+The MCP does not read the WAHA session directory.
 
 The public NOWEB template defaults to `WAHA_NOWEB_WA_VERSION=auto-web`. WAHA
 Core `2026.8.1` and later fetch the current WhatsApp Web revision at startup,
@@ -167,31 +272,38 @@ app state, or credentials; it reads the candidate exchange and writes only
 release/promotion state. It validates the manifest, repository/ref/SHA, archive
 digest and archive paths, copies the candidate into an immutable release, then
 atomically switches `current`. It never executes candidate code. A narrow
-polkit rule permits restart of the two WhatsApp adapter units and stop of those
-same units only when an initial bootstrap has no prior release to restore.
+polkit rule permits restart of the two default WhatsApp adapter units and the
+fixed optional secondary personal unit; stop is permitted for those units only
+when an initial bootstrap has no prior release to restore.
 
 The root-owned `/etc/whatsapp-mcp/updater.env` contains only non-secret service
 names, private path values, the candidate/release group names, and the two
-loopback health URLs. It must not contain app tokens or provider credentials.
-The staging and promoter systemd units load the same file; filesystem sandboxing
-enforces their different access sets. App credentials belong only in each
-profile's separate private `EnvironmentFile`.
+default loopback health URLs. When enabling the secondary profile, add both
+`WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY` and
+`WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY` (loopback `/health` only). Do not put
+app tokens or provider credentials in this file. The staging and promoter
+systemd units load the same file; filesystem sandboxing enforces their different
+access sets. App credentials belong only in each profile's separate private
+`EnvironmentFile`.
 
-Readiness always requires both loopback endpoints to report the candidate
+Readiness always requires both default loopback endpoints to report the candidate
 revision, expected adapter (`linked-device` or `business-graph`), and expected
-profile (`personal-owner` or `business-owner`). The one-time initial bootstrap
-also accepts either truthful state pair: `configured: true` with
-`status: configured`, or `configured: false` with `status: not_configured`.
-This lets the owner bring up an empty WAHA session and a Business profile before
-issuing Meta credentials; it does not claim that either account is connected.
+profile (`personal-owner` or `business-owner`). When the optional secondary
+profile is mapped, its linked-device/profile identity and health must also match.
+The one-time initial bootstrap accepts either truthful state pair for each
+configured profile: `configured: true` with `status: configured`, or
+`configured: false` with `status: not_configured`. This lets the owner bring up
+an empty WAHA session and a Business profile before issuing Meta credentials; it
+does not claim that any account is connected.
 Before each later promotion, the updater checks the active release's identity
-and health state for both profiles. A profile that is currently configured must
-remain configured; a truthful `not_configured` profile may remain so or become
+and health state for each configured profile. A profile that is currently
+configured must remain configured; a truthful `not_configured` profile may remain
+so or become
 configured after onboarding. A configured-to-not-configured transition is a
 health regression and rolls the candidate back. The activation journal stores
-both prior profile states so rollback and interruption recovery use the same
-baseline. When there is no prior release, a failed bootstrap stops both
-services, removes the active link and failed release, and leaves its tested SHA
+the prior health state for each configured profile so rollback and interruption
+recovery use the same baseline. When there is no prior release, a failed bootstrap
+stops every enabled app service, removes the active link and failed release, and leaves its tested SHA
 quarantined. The rejected SHA is skipped on later timer runs; an operator must
 request `--retry <same-40-hex-SHA>` explicitly or wait for a new tested SHA. A
 journal outside releases recovers interrupted activation. Session, media,
@@ -208,9 +320,11 @@ directories. WAHA has a separate identity and is not a member of the app release
 group.
 
 The timer is enabled only after an independently verified bootstrap release,
-both profiles report their baseline health states with exact identities and
-release SHA, distinct service identities, path permissions, the exact polkit
-rule, and rollback smoke tests are installed and checked. Business may remain
+both default profiles report their baseline health states with exact identities
+and release SHA; an enabled optional profile must also have a checked identity
+and baseline before its health mapping is enabled. Distinct service identities,
+path permissions, the exact polkit rule, and rollback smoke tests are installed
+and checked. Business may remain
 truthfully `not_configured` while Meta onboarding is pending; this does not
 block tested application-code updates and does not mean the Business account is
 connected. The WAHA image remains pinned independently; this GitHub application

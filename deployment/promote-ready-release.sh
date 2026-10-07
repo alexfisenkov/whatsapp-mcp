@@ -8,10 +8,12 @@ readonly REPOSITORY='https://github.com/alexfisenkov/whatsapp-mcp.git'
 readonly READY_REF='refs/tags/deploy-ready'
 readonly MAIN_REF='refs/heads/main'
 readonly PERSONAL_UNIT='mcp-whatsapp-personal.service'
+readonly PERSONAL_SECONDARY_UNIT='mcp-whatsapp-personal-indonesia.service'
 readonly BUSINESS_UNIT='mcp-whatsapp-business.service'
 readonly PERSONAL_ADAPTER='linked-device'
 readonly BUSINESS_ADAPTER='business-graph'
 readonly PERSONAL_PROFILE='personal-owner'
+readonly PERSONAL_SECONDARY_ADAPTER='linked-device'
 readonly BUSINESS_PROFILE='business-owner'
 
 log() { printf 'whatsapp-promote: %s\n' "$*" >&2; }
@@ -27,6 +29,8 @@ readonly PROMOTE_STATE_ROOT="${WHATSAPP_PROMOTE_STATE_ROOT:?}"
 readonly CANDIDATE_GROUP="${WHATSAPP_CANDIDATE_GROUP:?}"
 readonly RELEASE_GROUP="${WHATSAPP_RELEASE_GROUP:?}"
 readonly HEALTH_PERSONAL="${WHATSAPP_HEALTH_URL_PERSONAL:?}"
+readonly HEALTH_PERSONAL_SECONDARY="${WHATSAPP_HEALTH_URL_PERSONAL_SECONDARY:-}"
+readonly PERSONAL_SECONDARY_PROFILE="${WHATSAPP_PROFILE_ID_PERSONAL_SECONDARY:-}"
 readonly HEALTH_BUSINESS="${WHATSAPP_HEALTH_URL_BUSINESS:?}"
 readonly RELEASES="$RELEASE_ROOT/releases"
 readonly CURRENT_LINK="$RELEASE_ROOT/current"
@@ -52,6 +56,26 @@ done
 for command in git python3 curl tar chgrp chmod find systemctl; do
   command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
 done
+PERSONAL_SECONDARY_ENABLED=false
+if [[ -n "$HEALTH_PERSONAL_SECONDARY" || -n "$PERSONAL_SECONDARY_PROFILE" ]]; then
+  [[ -n "$HEALTH_PERSONAL_SECONDARY" && -n "$PERSONAL_SECONDARY_PROFILE" ]] \
+    || die 'optional personal profile requires both its identity and health URL'
+  [[ "$PERSONAL_SECONDARY_PROFILE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
+    || die 'optional personal profile ID is invalid'
+  [[ "$PERSONAL_SECONDARY_PROFILE" != "$PERSONAL_PROFILE" \
+    && "$PERSONAL_SECONDARY_PROFILE" != "$BUSINESS_PROFILE" ]] \
+    || die 'optional personal profile ID must be distinct from the default profiles'
+  valid_local_health_url "$HEALTH_PERSONAL_SECONDARY" \
+    || die 'optional personal health URL must be loopback /health without credentials or query'
+  if ! systemctl is-enabled --quiet "$PERSONAL_SECONDARY_UNIT" \
+    && ! systemctl is-active --quiet "$PERSONAL_SECONDARY_UNIT"; then
+    die 'optional personal profile is configured but its fixed service is not enabled or active'
+  fi
+  PERSONAL_SECONDARY_ENABLED=true
+elif systemctl is-enabled --quiet "$PERSONAL_SECONDARY_UNIT" \
+  || systemctl is-active --quiet "$PERSONAL_SECONDARY_UNIT"; then
+  die 'optional personal service is enabled or active but its identity and health URL are not configured'
+fi
 for required_group in "$CANDIDATE_GROUP" "$RELEASE_GROUP"; do
   id -nG | tr ' ' '\n' | grep -Fxq "$required_group" || die "promoter lacks required group: $required_group"
 done
@@ -84,11 +108,13 @@ switch_current() {
 }
 
 restart_adapters() {
-  systemctl restart "$PERSONAL_UNIT" && systemctl restart "$BUSINESS_UNIT"
+  systemctl restart "$PERSONAL_UNIT" && systemctl restart "$BUSINESS_UNIT" \
+    && { [[ "$PERSONAL_SECONDARY_ENABLED" != true ]] || systemctl restart "$PERSONAL_SECONDARY_UNIT"; }
 }
 
 stop_adapters() {
-  systemctl stop "$PERSONAL_UNIT" && systemctl stop "$BUSINESS_UNIT"
+  systemctl stop "$PERSONAL_UNIT" && systemctl stop "$BUSINESS_UNIT" \
+    && { [[ "$PERSONAL_SECONDARY_ENABLED" != true ]] || systemctl stop "$PERSONAL_SECONDARY_UNIT"; }
 }
 
 health_state() {
@@ -122,11 +148,13 @@ health_once() {
 }
 
 wait_health() {
-  local revision="$1" personal_baseline="$2" business_baseline="$3" attempt
+  local revision="$1" personal_baseline="$2" business_baseline="$3" secondary_baseline="$4" attempt
   for attempt in {1..20}; do
     if health_once "$HEALTH_PERSONAL" "$PERSONAL_ADAPTER" "$PERSONAL_PROFILE" "$revision" \
       "$personal_baseline" \
-      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision" "$business_baseline"; then
+      && health_once "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$revision" "$business_baseline" \
+      && { [[ "$PERSONAL_SECONDARY_ENABLED" != true ]] \
+        || health_once "$HEALTH_PERSONAL_SECONDARY" "$PERSONAL_SECONDARY_ADAPTER" "$PERSONAL_SECONDARY_PROFILE" "$revision" "$secondary_baseline"; }; then
       return 0
     fi
     sleep 2
@@ -146,8 +174,8 @@ mark_rejected() {
 }
 
 write_pending() {
-  local old_sha="$1" new_sha="$2" phase="$3" personal_baseline="$4" business_baseline="$5" temporary="$PROMOTE_STATE_ROOT/.activation.$$.tmp"
-  printf '%s\n%s\n%s\n%s\n%s\n' "$old_sha" "$new_sha" "$phase" "$personal_baseline" "$business_baseline" >"$temporary"
+  local old_sha="$1" new_sha="$2" phase="$3" personal_baseline="$4" business_baseline="$5" secondary_baseline="$6" temporary="$PROMOTE_STATE_ROOT/.activation.$$.tmp"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$old_sha" "$new_sha" "$phase" "$personal_baseline" "$business_baseline" "$secondary_baseline" >"$temporary"
   chmod 0600 "$temporary"
   python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$temporary" "$PENDING_FILE"
 }
@@ -300,21 +328,29 @@ fi
 recover_pending() {
   [[ -f "$PENDING_FILE" && ! -L "$PENDING_FILE" ]] || return 0
   local -a pending=()
-  local line old_sha new_sha personal_baseline business_baseline
+  local line old_sha new_sha personal_baseline business_baseline secondary_baseline
   while IFS= read -r line; do pending+=("$line"); done <"$PENDING_FILE"
-  [[ "${#pending[@]}" -eq 5 ]] || die 'invalid activation journal; manual recovery required'
+  [[ "${#pending[@]}" -eq 5 || "${#pending[@]}" -eq 6 ]] || die 'invalid activation journal; manual recovery required'
   old_sha="${pending[0]}"
   new_sha="${pending[1]}"
   personal_baseline="${pending[3]}"
   business_baseline="${pending[4]}"
+  secondary_baseline="${pending[5]:-none}"
   { [[ "$old_sha" == 'none' ]] || valid_sha "$old_sha"; } && valid_sha "$new_sha" || die 'invalid activation journal SHA; manual recovery required'
-  case "$old_sha:$personal_baseline:$business_baseline" in
-    none:none:none) ;;
-    [0-9a-f][0-9a-f]*:configured:configured|[0-9a-f][0-9a-f]*:configured:not_configured|[0-9a-f][0-9a-f]*:not_configured:configured|[0-9a-f][0-9a-f]*:not_configured:not_configured) valid_sha "$old_sha" || die 'invalid activation journal baseline; manual recovery required' ;;
-    *) die 'invalid activation journal health baseline; manual recovery required' ;;
-  esac
+  for baseline in "$personal_baseline" "$business_baseline" "$secondary_baseline"; do
+    case "$baseline" in none|configured|not_configured) ;; *) die 'invalid activation journal baseline; manual recovery required' ;; esac
+  done
+  if [[ "$old_sha" == 'none' ]]; then
+    [[ "$personal_baseline:$business_baseline:$secondary_baseline" == 'none:none:none' ]] \
+      || die 'invalid activation journal baseline; manual recovery required'
+  else
+    valid_sha "$old_sha" || die 'invalid activation journal baseline; manual recovery required'
+  fi
   [[ "$old_sha" != "$new_sha" ]] || die 'activation journal must name distinct releases'
   [[ -d "$RELEASES/$new_sha" ]] || die 'activation journal candidate release missing; manual recovery required'
+  if [[ "$PERSONAL_SECONDARY_ENABLED" == true && "${#pending[@]}" -eq 5 ]]; then
+    log 'recover legacy two-profile journal; require correct secondary identity and revision, without a recorded prior state'
+  fi
   log "recover interrupted activation; quarantine $new_sha and restore ${old_sha}"
   mark_rejected "$new_sha" || die 'could not quarantine interrupted candidate'
   if [[ "$old_sha" == "none" ]]; then
@@ -337,7 +373,8 @@ recover_pending() {
   log "restore previous release $old_sha"
   switch_current "$old_sha" || die 'cannot restore release symlink during recovery'
   restart_adapters || die 'service restart failed during recovery'
-  wait_health "$old_sha" "$personal_baseline" "$business_baseline" || die 'previous release health failed during recovery'
+  wait_health "$old_sha" "$personal_baseline" "$business_baseline" "$secondary_baseline" \
+    || die 'previous release health failed during recovery'
   rm -f -- "$PENDING_FILE"
   log "recovered activation to $old_sha; stop this run before another promotion"
   exit 0
@@ -370,6 +407,7 @@ bootstrap=0
 old_sha='none'
 personal_baseline=none
 business_baseline=none
+secondary_baseline=none
 if [[ -L "$CURRENT_LINK" ]]; then
   old_release="$(current_target)" || die 'current symlink target is outside the release root'
   old_sha="$(basename "$old_release")"
@@ -379,6 +417,10 @@ if [[ -L "$CURRENT_LINK" ]]; then
     || die 'current personal profile health does not match its release identity'
   business_baseline="$(health_state "$HEALTH_BUSINESS" "$BUSINESS_ADAPTER" "$BUSINESS_PROFILE" "$old_sha")" \
     || die 'current Business profile health does not match its release identity'
+  if [[ "$PERSONAL_SECONDARY_ENABLED" == true ]]; then
+    secondary_baseline="$(health_state "$HEALTH_PERSONAL_SECONDARY" "$PERSONAL_SECONDARY_ADAPTER" "$PERSONAL_SECONDARY_PROFILE" "$old_sha")" \
+      || die 'current optional personal profile health does not match its release identity'
+  fi
   if [[ "$ready_sha" == "$old_sha" ]]; then
     log "release $ready_sha is already active"
     exit 0
@@ -399,9 +441,9 @@ ready_after="$(remote_sha "$READY_REF")" || die 'cannot re-read deploy-ready ref
 main_after="$(remote_sha "$MAIN_REF")" || die 'cannot re-read main ref'
 [[ "$ready_after" == "$ready_sha" && "$main_after" == "$ready_sha" ]] || { log 'tested ref changed before promotion; skip'; exit 0; }
 
-write_pending "$old_sha" "$ready_sha" activating "$personal_baseline" "$business_baseline"
+write_pending "$old_sha" "$ready_sha" activating "$personal_baseline" "$business_baseline" "$secondary_baseline"
 switch_current "$ready_sha" || die 'cannot atomically switch active release'
-if restart_adapters && wait_health "$ready_sha" "$personal_baseline" "$business_baseline"; then
+if restart_adapters && wait_health "$ready_sha" "$personal_baseline" "$business_baseline" "$secondary_baseline"; then
   rm -f -- "$REJECTED_DIR/$ready_sha"
   rm -f -- "$PENDING_FILE"
   if [[ "$bootstrap" -eq 1 ]]; then
@@ -428,7 +470,8 @@ fi
 log "release $ready_sha failed identity/configured health checks; rolling back to $old_sha"
 switch_current "$old_sha" || die 'rollback symlink failed; activation journal retained'
 restart_adapters || die 'rollback restart failed; activation journal retained'
-wait_health "$old_sha" "$personal_baseline" "$business_baseline" || die 'rollback health failed; activation journal retained'
+wait_health "$old_sha" "$personal_baseline" "$business_baseline" "$secondary_baseline" \
+  || die 'rollback health failed; activation journal retained'
 mark_rejected "$ready_sha" || die 'could not persist rejected-SHA quarantine'
 rm -f -- "$PENDING_FILE"
 die "candidate $ready_sha failed; previous release restored and SHA quarantined"

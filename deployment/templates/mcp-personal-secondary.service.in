@@ -1,0 +1,47 @@
+[Unit]
+Description=WhatsApp MCP optional additional personal linked-device profile
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@PERSONAL_SECONDARY_SERVICE_USER@
+Group=@PERSONAL_SECONDARY_SERVICE_GROUP@
+SupplementaryGroups=@RELEASE_GROUP@
+WorkingDirectory=@RELEASE_ROOT@/current
+Environment=WHATSAPP_ADAPTER=linked-device
+Environment=WHATSAPP_PROFILE_ID=@PERSONAL_SECONDARY_PROFILE_ID@
+Environment=WHATSAPP_CALLER_ID=@PERSONAL_SECONDARY_CALLER_ID@
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=@PERSONAL_SECONDARY_MCP_LOOPBACK_PORT@
+Environment=WHATSAPP_STATE_DIR=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@
+Environment=WHATSAPP_AUDIT_DB_PATH=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@/audit.sqlite
+Environment=WHATSAPP_HISTORY_DB_PATH=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@/history.sqlite
+Environment=WHATSAPP_MEDIA_DIR=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@/media
+EnvironmentFile=@PERSONAL_SECONDARY_PRIVATE_ENV_FILE@
+StateDirectory=@STATE_PREFIX@/@PERSONAL_SECONDARY_STATE_NAME@
+StateDirectoryMode=0700
+RuntimeDirectory=@RUNTIME_PREFIX@/@PERSONAL_SECONDARY_STATE_NAME@
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/node @RELEASE_ROOT@/current/dist/http-server.js
+ExecStartPre=/usr/bin/install -d -m 0700 @STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@/media
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=192M
+CPUQuota=100%
+ReadWritePaths=@STATE_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@ @RUNTIME_ROOT@/@PERSONAL_SECONDARY_STATE_NAME@
+
+[Install]
+WantedBy=multi-user.target
