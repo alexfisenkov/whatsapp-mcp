@@ -12,6 +12,7 @@ Network=slirp4netns:allow_host_loopback=false
 PublishPort=127.0.0.1:@WAHA_LOOPBACK_PORT@:3000/tcp
 Volume=@WAHA_SESSION_DIR@:/app/.sessions:rw
 Environment=WHATSAPP_DEFAULT_ENGINE=NOWEB
+Environment=WAHA_NOWEB_WA_VERSION=auto-web
 Environment=WAHA_PRINT_QR=False
 EnvironmentFile=@WAHA_PRIVATE_ENV_FILE@
 ReadOnly=true

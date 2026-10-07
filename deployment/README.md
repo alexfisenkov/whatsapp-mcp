@@ -22,6 +22,11 @@ files use mode `0600` and stay outside application releases.
 
 The linked-device provider is a separate rootless Podman Quadlet instance. The
 example pins WAHA Core NOWEB to version `2026.9.2` and its amd64 image digest.
+The Quadlet also sets `WAHA_NOWEB_WA_VERSION=auto-web`. WAHA `2026.8.1` and newer
+fetch the current WhatsApp Web revision at container startup, compare it with
+the revision bundled in WAHA, and use the higher one. If the fetch is unavailable,
+WAHA keeps its built-in revision. This updates only the Web client version; the
+WAHA image tag and digest remain pinned and update separately.
 WAHA's current deployment documentation describes Docker/Compose; Podman is an
 OCI-compatible, daemonless runtime choice that still requires a staging smoke
 test with this exact image before production use.
@@ -105,6 +110,23 @@ Business API credentials in separate files readable only by their respective
 service identities. The template values in this repository are not production
 credentials. The personal MCP receives its own WAHA API key copy; it does not
 read the WAHA session directory.
+
+The public NOWEB template defaults to `WAHA_NOWEB_WA_VERSION=auto-web`. WAHA
+Core `2026.8.1` and later fetch the current WhatsApp Web revision at startup,
+use it only when newer than the image's built-in revision, and fall back to the
+built-in revision if the fetch fails. The WAHA image tag/digest remains pinned;
+this setting does not update the container image. Do not replace it with a
+hard-coded revision copied from an old startup log. For a controlled test, edit
+the `WAHA_NOWEB_WA_VERSION` value in a private Quadlet copy to the exact revision
+and stage that change before applying it. WAHA normally ignores a requested pin
+older than its bundled revision; `WAHA_NOWEB_WA_VERSION_FORCE=True` can override
+that safeguard and should remain unset unless an operator deliberately tests an
+exact older revision.
+
+Changing the WhatsApp Web revision is separate from changing the WAHA image. Keep
+the same session name and private session volume when restarting the container.
+Do not unlink the linked device, log out, delete the session directory, or
+change NOWEB store/full-sync flags as a first-line recovery step.
 
 ## CI-gated update contract
 

@@ -135,6 +135,8 @@ grep -q 'subject.user === "@PROMOTE_USER@"' "$ROOT/deployment/templates/update-p
 grep -Fq '["restart", "stop"].indexOf(action.lookup("verb")) !== -1' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit verbs are not restricted to restart/stop'
 grep -Fq '["mcp-whatsapp-personal.service", "mcp-whatsapp-business.service"].indexOf(action.lookup("unit")) !== -1' "$ROOT/deployment/templates/update-promote.rules.in" || fail 'polkit units are not restricted to the two app services'
 grep -q 'Network=slirp4netns:allow_host_loopback=false' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA rootless network does not explicitly deny host-loopback access'
+grep -Fq 'Environment=WAHA_NOWEB_WA_VERSION=auto-web' "$ROOT/deployment/templates/waha.container.in" || fail 'WAHA NOWEB does not fetch the current WhatsApp Web version on startup'
+if grep -Eq '^Environment=WAHA_NOWEB_WA_VERSION_FORCE=True$' "$ROOT/deployment/templates/waha.container.in"; then fail 'WAHA NOWEB unexpectedly forces a pinned WhatsApp Web version'; fi
 grep -Fq 'chmod 0750 "$candidate_tmp"' "$STAGE_SCRIPT" || fail 'stager candidate directory must be group-readable without setgid privilege'
 grep -Fq 'find "$temp_release" -type d -exec chmod 0750 {} +' "$PROMOTE_SCRIPT" || fail 'promoted directories must be group-readable without setgid privilege'
 if grep -Eq 'chmod 2[0-7]{3}' "$STAGE_SCRIPT" "$PROMOTE_SCRIPT"; then fail 'unprivileged updater attempts to set setgid directory bits'; fi

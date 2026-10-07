@@ -102,6 +102,40 @@ This MCP does not create or display a QR pairing flow. Create and link a WAHA
 session through the private WAHA provisioning surface for that profile, then
 check `personal_session_status`. Never send session exports or keys to a client.
 
+## Personal linked-device setup and QR troubleshooting
+
+The public Quadlet example pins the WAHA Core image and sets
+`WAHA_NOWEB_WA_VERSION=auto-web`. WAHA `2026.8.1` and later fetch the current
+WhatsApp Web revision when the container starts, use it only if it is newer
+than the revision bundled in that image, and fall back to the bundled revision
+when the fetch fails. This does not update the pinned WAHA image. Do not replace
+`auto-web` with an old revision copied from a log; a controlled pin is described
+in the [deployment instructions](deployment/README.md).
+
+Pair only in the private WAHA provisioning surface. On the primary phone open
+WhatsApp → **Linked devices** → **Link a device** and scan the current QR shown by
+WAHA. Do not use the phone's general QR scanner, save the QR, or send a screenshot
+to anyone. WAHA changes the QR while the session reports `SCAN_QR_CODE`; fetch
+the newest QR for each update instead of reusing an old image. WAHA documents a
+60-second lifetime for the first QR, 20 seconds for later QR codes, and at most
+six QR codes before the session enters `FAILED`.
+
+If WhatsApp reports `Can't link device`, stop scanning that code. Confirm that
+the primary phone is using WhatsApp's **Link a device** screen, then wait for
+WAHA's next `SCAN_QR_CODE` update and scan its fresh QR once. If the session has
+reached `FAILED` after the QR cycle, restart the same WAHA session once while
+preserving its private session volume, then scan one newly issued QR. Do not
+repeatedly retry a stale QR, unlink/log out the account, delete the session
+directory, or reset its store as a first response. If the fresh attempt still
+fails, stop and review redacted WAHA/phone diagnostics before trying again.
+
+The current core snapshot passed `npm test` 79/79 on Node 22.23.2. Separately,
+one owner-operated pairing on 2026-10-07 reached WAHA `WORKING` with the pinned
+NOWEB image and `auto-web`. This verifies one environment; it does not show that
+the setting alone caused success or guarantee pairing on every phone or account.
+See the [WAHA NOWEB version and session docs](https://waha.devlike.pro/docs/engines/noweb/)
+and [WhatsApp's linked-device instructions](https://faq.whatsapp.com/1317564962315842/).
+
 ## Hosted Streamable HTTP
 
 Run `npm run start:http` behind HTTPS with `MCP_HOST=127.0.0.1`. `MCP_PORT` is

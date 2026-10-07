@@ -1,6 +1,6 @@
 # SOP WhatsApp MCP
 
-Версия операции: 2026-10-06. Один профиль обслуживает один собственный WhatsApp
+Версия операции: 2026-10-07. Один профиль обслуживает один собственный WhatsApp
 account. Личный linked-device и Business Graph работают отдельными instance и
 хранилищами. Этот SOP описывает кодовые и deployment gates; live deployment,
 QR pairing и отправку сообщений он сам по себе не выполняет.
@@ -75,11 +75,39 @@ Hosted owner deployment использует закреплённый `noweb-202
 изолированный rootless container; его сетевую изоляцию, API key и private port
 обслуживает [deployment SOP](../deployment/README.md).
 
+Публичный Quadlet задаёт `WAHA_NOWEB_WA_VERSION=auto-web`. Эта настройка доступна
+в WAHA с `2026.8.1`: при старте WAHA запрашивает свежую версию WhatsApp Web,
+сравнивает её с встроенной в image и использует более новую. Если запрос не
+удался, остаётся встроенная версия. Образ WAHA при этом остаётся на проверенном
+tag/digest. Не копируй `latest`/номер ревизии из старого лога как постоянную
+настройку. Контролируемый pin тестируется отдельно через private Quadlet copy;
+`WAHA_NOWEB_WA_VERSION_FORCE=True` не включай без специально проверенного
+операторского решения.
+
 Создание/QR pairing сессии выполняется как приватное owner provisioning в WAHA.
 В этой версии MCP не содержит QR tool и не создаёт session. После pairing
 проверь `personal_session_status` и `personal_account_me`. Не выводи QR или
 session export в терминал, логи или публичные инструкции. Не меняй store/fullSync
 flags уже связанной сессии без отдельного recovery плана.
+
+Сканируй только актуальный QR из WAHA приватной панели/процесса. Когда WAHA
+показывает `SCAN_QR_CODE`, QR может обновиться; возьми новый перед каждой
+попыткой. WAHA указывает 60 секунд для первого кода, 20 секунд для последующих
+и максимум шесть QR до статуса `FAILED`. На телефоне открой WhatsApp →
+**Linked devices** → **Link a device** и наведи камеру основного телефона на
+текущий QR. Не используй общий QR scanner телефона.
+
+При сообщении WhatsApp `Can't link device` прекрати сканировать старый код.
+Дождись свежего QR; если WAHA исчерпал цикл и сообщил `FAILED`, один раз
+перезапусти ту же WAHA session, сохранив её private volume, и возьми новый QR.
+Не повторяй сканирование вслепую, не делай logout/unlink, не удаляй session
+directory и не сбрасывай NOWEB store. Если одна новая попытка не помогла, собери
+redacted diagnostics и остановись до отдельного разбора.
+
+7 октября 2026 года одна owner-operated pairing с pinned NOWEB image и `auto-web`
+дошла до WAHA `WORKING`. Это подтверждает одну среду, но не доказывает, что
+единственной причиной была версия WhatsApp Web, и не гарантирует успех на каждом
+устройстве или аккаунте.
 
 Индекс MCP пополняется вручную через `personal_history_sync`: задаёт `chatId`
 при необходимости, `pageSize` до 50 и `maxPages` до 10. Это повторный bounded
